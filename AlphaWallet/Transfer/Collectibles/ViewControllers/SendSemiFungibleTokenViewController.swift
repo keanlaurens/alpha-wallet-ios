@@ -18,7 +18,7 @@ protocol SendSemiFungibleTokenViewControllerDelegate: AnyObject, CanOpenURL {
 
 final class SendSemiFungibleTokenViewController: UIViewController, TokenVerifiableStatusViewController {
     private lazy var targetAddressTextField: AddressTextField = {
-        let textField = AddressTextField(domainResolutionService: domainResolutionService)
+        let textField = AddressTextField(server: server, domainResolutionService: domainResolutionService)
         textField.delegate = self
         textField.inputAccessoryButtonType = .done
         textField.returnKeyType = .done
@@ -54,7 +54,7 @@ final class SendSemiFungibleTokenViewController: UIViewController, TokenVerifiab
     private let buttonsBar = HorizontalButtonsBar(configuration: .primary(buttons: 1))
     private let viewModel: SendSemiFungibleTokenViewModel
     private let tokenCardViewFactory: TokenCardViewFactory
-    private let domainResolutionService: DomainResolutionServiceType
+    private let domainResolutionService: DomainNameResolutionServiceType
     private var cancellable = Set<AnyCancellable>()
 
     var contract: AlphaWallet.Address {
@@ -73,7 +73,7 @@ final class SendSemiFungibleTokenViewController: UIViewController, TokenVerifiab
         return view
     }()
 
-    init(viewModel: SendSemiFungibleTokenViewModel, tokenCardViewFactory: TokenCardViewFactory, domainResolutionService: DomainResolutionServiceType) {
+    init(viewModel: SendSemiFungibleTokenViewModel, tokenCardViewFactory: TokenCardViewFactory, domainResolutionService: DomainNameResolutionServiceType) {
         self.viewModel = viewModel
         self.tokenCardViewFactory = tokenCardViewFactory
         self.domainResolutionService = domainResolutionService
@@ -118,7 +118,7 @@ final class SendSemiFungibleTokenViewController: UIViewController, TokenVerifiab
         continueButton.setTitle(R.string.localizable.confirmPaymentConfirmButtonTitle(), for: .normal)
         continueButton.addTarget(self, action: #selector(continueButtonSelected), for: .touchUpInside)
     }
-    
+
     private func generateViewsForSelectedTokenHolders(viewModel: SendSemiFungibleTokenViewModel) -> [UIView] {
         var subviews: [UIView] = []
         for (index, each) in viewModel.tokenHolders.enumerated() {

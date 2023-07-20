@@ -8,6 +8,7 @@
 import UIKit
 import Combine
 import AVKit
+import AlphaWalletCore
 import AlphaWalletFoundation
 
 protocol ContentCacheStorage: AnyObject {
@@ -60,6 +61,18 @@ class GenerateVideoStillInterceptor: MediaContentDownloaderContentResponseInterc
                 .setFailureType(to: MediaContentDownloader.ContentLoaderError.self)
                 .eraseToAnyPublisher()
         }
+    }
+}
+
+extension MediaContentDownloader {
+    static func instance(reachability: ReachabilityManager) -> MediaContentDownloader {
+        let mediaContentCache = KingfisherImageCacheStorage()
+
+        return MediaContentDownloader(
+            networking: MediaContentNetworkingImpl(),
+            cache: mediaContentCache,
+            contentResponseInterceptor: GenerateVideoStillInterceptor(cache: mediaContentCache),
+            reachability: reachability)
     }
 }
 

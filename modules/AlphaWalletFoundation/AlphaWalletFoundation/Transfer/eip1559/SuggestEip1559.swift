@@ -194,10 +194,9 @@ actor SuggestEip1559 {
 public struct Eip1559FeeOracleResult: Equatable {
     public let maxFeePerGas: BigUInt
     public let maxPriorityFeePerGas: BigUInt
-}
 
-public extension Int {
-    var hexEncoded: String {
-        return String(self, radix: 16).add0x
+    public init(maxFeePerGas: BigUInt, maxPriorityFeePerGas: BigUInt) {
+        self.maxFeePerGas = maxFeePerGas
+        self.maxPriorityFeePerGas = maxPriorityFeePerGas
     }
 }

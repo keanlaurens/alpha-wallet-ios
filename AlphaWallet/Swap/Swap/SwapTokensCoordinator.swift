@@ -47,7 +47,7 @@ final class SwapTokensCoordinator: Coordinator {
     }()
     private let keystore: Keystore
     private let analytics: AnalyticsLogger
-    private let domainResolutionService: DomainResolutionServiceType
+    private let domainResolutionService: DomainNameResolutionServiceType
     private var transactionConfirmationResult: ConfirmResult? = .none
     private let tokensFilter: TokensFilter
     private let networkService: NetworkService
@@ -62,7 +62,7 @@ final class SwapTokensCoordinator: Coordinator {
          configurator: SwapOptionsConfigurator,
          keystore: Keystore,
          analytics: AnalyticsLogger,
-         domainResolutionService: DomainResolutionServiceType,
+         domainResolutionService: DomainNameResolutionServiceType,
          assetDefinitionStore: AssetDefinitionStore,
          tokensPipeline: TokensProcessingPipeline,
          tokensFilter: TokensFilter,
@@ -303,7 +303,10 @@ extension SwapTokensCoordinator: TransactionConfirmationCoordinatorDelegate {
 
             strongSelf.transactionConfirmationResult = result
 
-            let coordinator = TransactionInProgressCoordinator(presentingViewController: strongSelf.navigationController)
+            let coordinator = TransactionInProgressCoordinator(
+                presentingViewController: strongSelf.navigationController,
+                server: strongSelf.configurator.server)
+
             coordinator.delegate = strongSelf
             strongSelf.addCoordinator(coordinator)
 
@@ -347,7 +350,7 @@ extension SwapTokensCoordinator: BuyCryptoDelegate {
         delegate?.buyCrypto(wallet: wallet, server: server, viewController: viewController, source: .transactionActionSheetInsufficientFunds)
     }
 }
-
+import AlphaWalletAddress
 public extension UnconfirmedTransaction {
     static func buildApproveTransaction(contract: AlphaWallet.Address, server: RPCServer, owner: AlphaWallet.Address, spender: AlphaWallet.Address, amount: BigUInt) throws -> (UnconfirmedTransaction, TransactionType.Configuration) {
         let configuration: TransactionType.Configuration = .approve

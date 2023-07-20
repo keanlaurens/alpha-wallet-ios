@@ -9,7 +9,7 @@ import Foundation
 import Combine
 import AlphaWalletLogger
 
-public final class MigrateToSupportEip1559Transactions: Initializer {
+public final class MigrateToSupportEip1559Transactions: Service {
     private let serversProvider: ServersProvidable
     private let keychain: Keystore
     private var cancelable = Set<AnyCancellable>()
@@ -35,7 +35,7 @@ public final class MigrateToSupportEip1559Transactions: Initializer {
                     let storage = TransactionDataStore(store: RealmStore.storage(for: wallet))
                     storage.deleteAll()
                 }
-                
+
                 Config.setAsMigratedToEip1559TransactionsSupport()
             }.store(in: &cancelable)
     }
@@ -44,9 +44,7 @@ public final class MigrateToSupportEip1559Transactions: Initializer {
         Config.setLastFetchedErc20InteractionBlockNumber(0, server: server, wallet: wallet.address)
         Config.setLastFetchedErc721InteractionBlockNumber(0, server: server, wallet: wallet.address)
 
-        let sessionId = WalletSession.functional.sessionID(account: wallet, server: server)
-        let tracker = TransactionsTracker(sessionID: sessionId)
-        tracker.fetchingState = .initial
+        PersistantSchedulerStateProvider.resetFetchingState(account: wallet, servers: [server])
     }
 }
 

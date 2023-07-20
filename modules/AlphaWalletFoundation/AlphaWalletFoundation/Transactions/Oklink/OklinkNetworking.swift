@@ -1,17 +1,14 @@
-//
-//  OklinkNetworking.swift
-//  Alamofire
-//
-//  Created by Vladyslav Shepitko on 07.03.2023.
-//
+// Copyright © 2023 Stormbird PTE. LTD.
 
 import Foundation
-import AlphaWalletCore
 import Combine
+import AlphaWalletCore
+import AlphaWalletLogger
 import SwiftyJSON
 
 //NOTE: as api dosn't return localized operation contract, symbol and decimal for transfer transactions, fetch them from rpc node
-public class OklinkApiNetworking: ApiNetworking {
+// swiftlint:disable type_body_length
+public class OklinkBlockchainExplorer: BlockchainExplorer {
     private static var allHTTPHeaderFields: HTTPHeaders = .init([
         "Content-type": "application/json",
         "client": Bundle.main.bundleIdentifier ?? "",
@@ -22,25 +19,32 @@ public class OklinkApiNetworking: ApiNetworking {
     private let baseUrl: URL = URL(string: "https://www.oklink.com")!
     private let apiKey: String?
     private let transporter: ApiTransporter
-    private let paginationFilter = TransactionPaginationFilter()
+    private let paginationFilter = TransactionPageBasedPaginationFilter()
     private let ercTokenProvider: TokenProviderType
     private let transactionBuilder: TransactionBuilder
+    private let defaultPagination = PageBasedTransactionsPagination(page: 0, lastFetched: [], limit: 50)
+    private let analytics: AnalyticsLogger
 
-    public init(server: RPCServer,
-                apiKey: String?,
-                transporter: ApiTransporter,
-                ercTokenProvider: TokenProviderType,
-                transactionBuilder: TransactionBuilder) {
-
+    public init(server: RPCServer, apiKey: String?, transporter: ApiTransporter, ercTokenProvider: TokenProviderType, transactionBuilder: TransactionBuilder, analytics: AnalyticsLogger) {
         self.transactionBuilder = transactionBuilder
         self.ercTokenProvider = ercTokenProvider
         self.server = server
         self.apiKey = apiKey
         self.transporter = transporter
+        self.analytics = analytics
+    }
+
+    public func gasPriceEstimates() -> AnyPublisher<LegacyGasEstimates, PromiseError> {
+        return .fail(PromiseError(error: BlockchainExplorerError.methodNotSupported))
     }
 
     public func normalTransactions(walletAddress: AlphaWallet.Address,
-                                   pagination: TransactionsPagination) -> AnyPublisher<TransactionsResponse<TransactionInstance>, PromiseError> {
+                                   sortOrder: GetTransactions.SortOrder,
+                                   pagination: TransactionsPagination?) -> AnyPublisher<TransactionsResponse, PromiseError> {
+
+        guard let pagination = (pagination ?? defaultPagination) as? PageBasedTransactionsPagination else {
+            return .fail(PromiseError(error: BlockchainExplorerError.paginationTypeNotSupported))
+        }
 
         let request = TransactionsRequest(
             baseUrl: baseUrl,
@@ -50,25 +54,27 @@ public class OklinkApiNetworking: ApiNetworking {
             apiKey: apiKey ?? "",
             chainShortName: server.okLinkChainShortName,
             protocolType: .transaction,
-            headers: OklinkApiNetworking.allHTTPHeaderFields)
+            headers: Self.allHTTPHeaderFields)
 
         let decoder = NormalTransactionListDecoder(pagination: pagination, paginationFilter: paginationFilter)
+        let analytics = analytics
+        let domainName = baseUrl.host!
 
         return transporter.dataTaskPublisher(request)
-            .handleEvents(receiveOutput: { EtherscanCompatibleApiNetworking.log(response: $0) })
+            .handleEvents(receiveOutput: { [server] in Self.log(response: $0, server: server, analytics: analytics, domainName: domainName) })
             .tryMap { try decoder.decode(data: $0.data) }
             .mapError { PromiseError(error: $0) }
             .flatMap { response in
                 self.buildTransactions(transactions: response.transactions)
                     .map {
-                        return TransactionsResponse<TransactionInstance>(
+                        return TransactionsResponse(
                             transactions: Covalent.ToNativeTransactionMapper.mergeTransactionOperationsIntoSingleTransaction($0),
-                            pagination: response.pagination)
+                            nextPage: response.nextPage)
                     }
             }.eraseToAnyPublisher()
     }
 
-    private func buildTransactions(transactions: [NormalTransaction]) -> AnyPublisher<[TransactionInstance], PromiseError> {
+    private func buildTransactions(transactions: [NormalTransaction]) -> AnyPublisher<[Transaction], PromiseError> {
         let publishers = transactions.map { transactionBuilder.buildTransaction(from: $0) }
 
         return Publishers.MergeMany(publishers)
@@ -79,7 +85,11 @@ public class OklinkApiNetworking: ApiNetworking {
     }
 
     public func erc20TokenTransferTransactions(walletAddress: AlphaWallet.Address,
-                                               pagination: TransactionsPagination) -> AnyPublisher<TransactionsResponse<TransactionInstance>, PromiseError> {
+                                               pagination: TransactionsPagination?) -> AnyPublisher<TransactionsResponse, PromiseError> {
+
+        guard let pagination = (pagination ?? defaultPagination) as? PageBasedTransactionsPagination else {
+            return .fail(PromiseError(error: BlockchainExplorerError.paginationTypeNotSupported))
+        }
 
         let request = TransactionsRequest(
             baseUrl: baseUrl,
@@ -89,28 +99,34 @@ public class OklinkApiNetworking: ApiNetworking {
             apiKey: apiKey ?? "",
             chainShortName: server.okLinkChainShortName,
             protocolType: .erc20,
-            headers: OklinkApiNetworking.allHTTPHeaderFields)
+            headers: Self.allHTTPHeaderFields)
 
         let decoder = TransactionListDecoder(pagination: pagination, paginationFilter: paginationFilter)
+        let analytics = analytics
+        let domainName = baseUrl.host!
 
         return transporter.dataTaskPublisher(request)
-            .handleEvents(receiveOutput: { EtherscanCompatibleApiNetworking.log(response: $0) })
+            .handleEvents(receiveOutput: { [server] in Self.log(response: $0, server: server, analytics: analytics, domainName: domainName) })
             .tryMap { try decoder.decode(data: $0.data) }
             .mapError { PromiseError(error: $0) }
-            .flatMap { response -> AnyPublisher<TransactionsResponse<TransactionInstance>, PromiseError> in
+            .flatMap { response -> AnyPublisher<TransactionsResponse, PromiseError> in
                 let contracts = response.transactions.compactMap { AlphaWallet.Address(uncheckedAgainstNullAddress: $0.tokenContractAddress) }
                 return self.fetchMissingOperationData(contracts: Array(Set(contracts)))
                     .setFailureType(to: PromiseError.self)
-                    .map { operations -> TransactionsResponse<TransactionInstance> in
+                    .map { operations -> TransactionsResponse in
                         let transactions = self.map(erc20TokenTransferTransactions: response.transactions, operations: operations)
                         let mergedTransactions = Covalent.ToNativeTransactionMapper.mergeTransactionOperationsIntoSingleTransaction(transactions)
-                        return TransactionsResponse<TransactionInstance>(transactions: mergedTransactions, pagination: response.pagination)
+                        return TransactionsResponse(transactions: mergedTransactions, nextPage: response.nextPage)
                     }.eraseToAnyPublisher()
             }.eraseToAnyPublisher()
     }
 
     public func erc721TokenTransferTransactions(walletAddress: AlphaWallet.Address,
-                                                pagination: TransactionsPagination) -> AnyPublisher<TransactionsResponse<TransactionInstance>, PromiseError> {
+                                                pagination: TransactionsPagination?) -> AnyPublisher<TransactionsResponse, PromiseError> {
+
+        guard let pagination = (pagination ?? defaultPagination) as? PageBasedTransactionsPagination else {
+            return .fail(PromiseError(error: BlockchainExplorerError.paginationTypeNotSupported))
+        }
 
         let request = TransactionsRequest(
             baseUrl: baseUrl,
@@ -120,28 +136,34 @@ public class OklinkApiNetworking: ApiNetworking {
             apiKey: apiKey ?? "",
             chainShortName: server.okLinkChainShortName,
             protocolType: .erc721,
-            headers: OklinkApiNetworking.allHTTPHeaderFields)
+            headers: Self.allHTTPHeaderFields)
 
         let decoder = TransactionListDecoder(pagination: pagination, paginationFilter: paginationFilter)
+        let analytics = analytics
+        let domainName = baseUrl.host!
 
         return transporter.dataTaskPublisher(request)
-            .handleEvents(receiveOutput: { EtherscanCompatibleApiNetworking.log(response: $0) })
+            .handleEvents(receiveOutput: { [server] in Self.log(response: $0, server: server, analytics: analytics, domainName: domainName) })
             .tryMap { try decoder.decode(data: $0.data) }
             .mapError { PromiseError(error: $0) }
-            .flatMap { response -> AnyPublisher<TransactionsResponse<TransactionInstance>, PromiseError> in
+            .flatMap { response -> AnyPublisher<TransactionsResponse, PromiseError> in
                 let contracts = response.transactions.compactMap { AlphaWallet.Address(uncheckedAgainstNullAddress: $0.tokenContractAddress) }
                 return self.fetchMissingOperationData(contracts: Array(Set(contracts)))
                     .setFailureType(to: PromiseError.self)
-                    .map { operations -> TransactionsResponse<TransactionInstance> in
+                    .map { operations -> TransactionsResponse in
                         let transactions = self.map(erc721TokenTransferTransactions: response.transactions, operations: operations)
                         let mergedTransactions = Covalent.ToNativeTransactionMapper.mergeTransactionOperationsIntoSingleTransaction(transactions)
-                        return TransactionsResponse<TransactionInstance>(transactions: mergedTransactions, pagination: response.pagination)
+                        return TransactionsResponse(transactions: mergedTransactions, nextPage: response.nextPage)
                     }.eraseToAnyPublisher()
             }.eraseToAnyPublisher()
     }
 
     public func erc1155TokenTransferTransaction(walletAddress: AlphaWallet.Address,
-                                                pagination: TransactionsPagination) -> AnyPublisher<TransactionsResponse<TransactionInstance>, PromiseError> {
+                                                pagination: TransactionsPagination?) -> AnyPublisher<TransactionsResponse, PromiseError> {
+
+        guard let pagination = (pagination ?? defaultPagination) as? PageBasedTransactionsPagination else {
+            return .fail(PromiseError(error: BlockchainExplorerError.paginationTypeNotSupported))
+        }
 
         let request = TransactionsRequest(
             baseUrl: baseUrl,
@@ -151,65 +173,54 @@ public class OklinkApiNetworking: ApiNetworking {
             apiKey: apiKey ?? "",
             chainShortName: server.okLinkChainShortName,
             protocolType: .erc1155,
-            headers: OklinkApiNetworking.allHTTPHeaderFields)
+            headers: Self.allHTTPHeaderFields)
 
         let decoder = TransactionListDecoder(pagination: pagination, paginationFilter: paginationFilter)
+        let analytics = analytics
+        let domainName = baseUrl.host!
 
         return transporter.dataTaskPublisher(request)
-            .handleEvents(receiveOutput: { EtherscanCompatibleApiNetworking.log(response: $0) })
+            .handleEvents(receiveOutput: { [server] in Self.log(response: $0, server: server, analytics: analytics, domainName: domainName) })
             .tryMap { try decoder.decode(data: $0.data) }
             .mapError { PromiseError(error: $0) }
-            .flatMap { response -> AnyPublisher<TransactionsResponse<TransactionInstance>, PromiseError> in
+            .flatMap { response -> AnyPublisher<TransactionsResponse, PromiseError> in
                 let contracts = response.transactions.compactMap { AlphaWallet.Address(uncheckedAgainstNullAddress: $0.tokenContractAddress) }
                 return self.fetchMissingOperationData(contracts: Array(Set(contracts)))
                     .setFailureType(to: PromiseError.self)
-                    .map { operations -> TransactionsResponse<TransactionInstance> in
+                    .map { operations -> TransactionsResponse in
                         let transactions = self.map(erc1155TokenTransferTransactions: response.transactions, operations: operations)
                         let mergedTransactions = Covalent.ToNativeTransactionMapper.mergeTransactionOperationsIntoSingleTransaction(transactions)
-                        return TransactionsResponse<TransactionInstance>(transactions: transactions, pagination: response.pagination)
+                        return TransactionsResponse(transactions: transactions, nextPage: response.nextPage)
                     }.eraseToAnyPublisher()
             }.eraseToAnyPublisher()
     }
 
-    public func erc20TokenTransferTransactions(startBlock: Int?) -> AnyPublisher<([TransactionInstance], Int), PromiseError> {
-        return .empty()
-    }
-
-    public func erc721TokenTransferTransactions(startBlock: Int?) -> AnyPublisher<([TransactionInstance], Int), PromiseError> {
-        return .empty()
-    }
-
-    public func normalTransactions(startBlock: Int, endBlock: Int, sortOrder: GetTransactions.SortOrder) -> AnyPublisher<[TransactionInstance], PromiseError> {
-        return .empty()
-    }
-
-    public func erc1155TokenTransferTransactions(startBlock: Int?) -> AnyPublisher<([TransactionInstance], Int), AlphaWalletCore.PromiseError> {
-        return .empty()
-    }
-
     public func erc20TokenInteractions(walletAddress: AlphaWallet.Address,
-                                       startBlock: Int?) -> AnyPublisher<UniqueNonEmptyContracts, PromiseError> {
-        return .empty()
+                                       pagination: TransactionsPagination?) -> AnyPublisher<UniqueNonEmptyContracts, PromiseError> {
+
+        return .fail(PromiseError(error: BlockchainExplorerError.methodNotSupported))
     }
 
     public func erc721TokenInteractions(walletAddress: AlphaWallet.Address,
-                                        startBlock: Int?) -> AnyPublisher<UniqueNonEmptyContracts, PromiseError> {
-        return .empty()
+                                        pagination: TransactionsPagination?) -> AnyPublisher<UniqueNonEmptyContracts, PromiseError> {
+
+        return .fail(PromiseError(error: BlockchainExplorerError.methodNotSupported))
     }
 
     public func erc1155TokenInteractions(walletAddress: AlphaWallet.Address,
-                                         startBlock: Int?) -> AnyPublisher<UniqueNonEmptyContracts, PromiseError> {
-        return .empty()
+                                         pagination: TransactionsPagination?) -> AnyPublisher<UniqueNonEmptyContracts, PromiseError> {
+
+        return .fail(PromiseError(error: BlockchainExplorerError.methodNotSupported))
     }
 
     private func map(erc20TokenTransferTransactions transactions: [Oklink.Transaction],
-                     operations: [AlphaWallet.Address: LocalizedOperation]) -> [TransactionInstance] {
+                     operations: [AlphaWallet.Address: ContractData]) -> [Transaction] {
 
-        return transactions.compactMap { tx -> TransactionInstance? in
+        return transactions.compactMap { tx -> Transaction? in
             guard let contract = AlphaWallet.Address(uncheckedAgainstNullAddress: tx.tokenContractAddress) else { return nil }
             let operation = operations[contract]
 
-            let localizedOperation = LocalizedOperationObjectInstance(
+            let localizedOperation = LocalizedOperation(
                 from: tx.from,
                 to: tx.to,
                 contract: contract,
@@ -220,7 +231,7 @@ public class OklinkApiNetworking: ApiNetworking {
                 name: operation?.name ?? "",
                 decimals: operation?.decimals ?? 18)
 
-            return TransactionInstance(
+            return Transaction(
                 id: tx.hash,
                 server: server,
                 blockNumber: tx.height,
@@ -240,13 +251,13 @@ public class OklinkApiNetworking: ApiNetworking {
     }
 
     private func map(erc721TokenTransferTransactions transactions: [Oklink.Transaction],
-                     operations: [AlphaWallet.Address: LocalizedOperation]) -> [TransactionInstance] {
+                     operations: [AlphaWallet.Address: ContractData]) -> [Transaction] {
 
-        return transactions.compactMap { tx -> TransactionInstance? in
+        return transactions.compactMap { tx -> Transaction? in
             guard let contract = AlphaWallet.Address(uncheckedAgainstNullAddress: tx.tokenContractAddress) else { return nil }
             let operation = operations[contract]
 
-            let localizedOperation = LocalizedOperationObjectInstance(
+            let localizedOperation = LocalizedOperation(
                 from: tx.from,
                 to: tx.to,
                 contract: contract,
@@ -257,7 +268,7 @@ public class OklinkApiNetworking: ApiNetworking {
                 name: operation?.name ?? "",
                 decimals: operation?.decimals ?? 0)
 
-            return TransactionInstance(
+            return Transaction(
                 id: tx.hash,
                 server: server,
                 blockNumber: tx.height,
@@ -277,13 +288,13 @@ public class OklinkApiNetworking: ApiNetworking {
     }
 
     private func map(erc1155TokenTransferTransactions transactions: [Oklink.Transaction],
-                     operations: [AlphaWallet.Address: LocalizedOperation]) -> [TransactionInstance] {
+                     operations: [AlphaWallet.Address: ContractData]) -> [Transaction] {
 
-        return transactions.compactMap { tx -> TransactionInstance? in
+        return transactions.compactMap { tx -> Transaction? in
             guard let contract = AlphaWallet.Address(uncheckedAgainstNullAddress: tx.tokenContractAddress) else { return nil }
             let operation = operations[contract]
 
-            let localizedOperation = LocalizedOperationObjectInstance(
+            let localizedOperation = LocalizedOperation(
                 from: tx.from,
                 to: tx.to,
                 contract: contract,
@@ -295,7 +306,7 @@ public class OklinkApiNetworking: ApiNetworking {
                 name: operation?.name ?? "",
                 decimals: operation?.decimals ?? 0)
 
-            return TransactionInstance(
+            return Transaction(
                 id: tx.hash,
                 server: server,
                 blockNumber: tx.height,
@@ -314,8 +325,8 @@ public class OklinkApiNetworking: ApiNetworking {
         }
     }
 
-    private typealias LocalizedOperation = (name: String, decimals: Int, symbol: String)
-    private func fetchMissingOperationData(contracts: [AlphaWallet.Address]) -> AnyPublisher<[AlphaWallet.Address: LocalizedOperation], Never> {
+    private typealias ContractData = (name: String, decimals: Int, symbol: String)
+    private func fetchMissingOperationData(contracts: [AlphaWallet.Address]) -> AnyPublisher<[AlphaWallet.Address: ContractData], Never> {
         let publishers = contracts.map { contract in
             let p1 = ercTokenProvider.getContractName(for: contract)
             let p2 = ercTokenProvider.getDecimals(for: contract)
@@ -331,15 +342,27 @@ public class OklinkApiNetworking: ApiNetworking {
         return Publishers.MergeMany(publishers)
             .collect()
             .map { $0.compactMap { $0 } }
-            .map { data -> [AlphaWallet.Address: LocalizedOperation] in
-                var values: [AlphaWallet.Address: LocalizedOperation] = [:]
+            .map { data -> [AlphaWallet.Address: ContractData] in
+                var values: [AlphaWallet.Address: ContractData] = [:]
                 for each in data { values[each.contract] = (name: each.name, decimals: each.decimals, symbol: each.symbol) }
 
                 return values
             }.eraseToAnyPublisher()
     }
 
+    fileprivate static func log(response: URLRequest.Response, server: RPCServer, analytics: AnalyticsLogger, domainName: String, caller: String = #function) {
+        switch URLRequest.validate(statusCode: 200..<300, response: response.response) {
+        case .failure:
+            let json = try? JSON(response.data)
+            infoLog("[API] request failure with status code: \(response.response.statusCode), json: \(json), server: \(server)", callerFunctionName: caller)
+            let properties: [String: AnalyticsEventPropertyValue] = [Analytics.Properties.chain.rawValue: server.chainID, Analytics.Properties.domainName.rawValue: domainName, Analytics.Properties.code.rawValue: response.response.statusCode]
+            analytics.log(error: Analytics.WebApiErrors.blockchainExplorerError, properties: properties)
+        case .success:
+            break
+        }
+    }
 }
+// swiftlint:enable type_body_length
 
 fileprivate extension TransactionState {
     init(state: Oklink.TransactionState) {
@@ -354,42 +377,52 @@ fileprivate extension TransactionState {
     }
 }
 
-extension OklinkApiNetworking {
+extension OklinkBlockchainExplorer {
+
+    struct Response<T> {
+        let transactions: [T]
+        let nextPage: PageBasedTransactionsPagination
+
+        init(transactions: [T], nextPage: PageBasedTransactionsPagination) {
+            self.transactions = transactions
+            self.nextPage = nextPage
+        }
+    }
 
     struct TransactionListDecoder {
-        let pagination: TransactionsPagination
-        let paginationFilter: TransactionPaginationFilter
+        let pagination: PageBasedTransactionsPagination
+        let paginationFilter: TransactionPageBasedPaginationFilter
 
-        func decode(data: Data) throws -> TransactionsResponse<Oklink.Transaction> {
+        func decode(data: Data) throws -> Response<Oklink.Transaction> {
             guard
                 let json = try? JSON(data: data),
                 let response = Oklink.TransactionListResponse<Oklink.Transaction>(json: json)
             else { throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "")) }
 
-            guard let transactionsData = response.data.first else { return .init(transactions: [], pagination: pagination) }
+            guard let transactionsData = response.data.first else { return .init(transactions: [], nextPage: pagination) }
 
             let data = paginationFilter.process(transactions: transactionsData.transactionList, pagination: pagination)
 
-            return .init(transactions: data.transactions, pagination: data.pagination)
+            return .init(transactions: data.transactions, nextPage: data.nexPage)
         }
     }
 
     struct NormalTransactionListDecoder {
-        let pagination: TransactionsPagination
-        let paginationFilter: TransactionPaginationFilter
+        let pagination: PageBasedTransactionsPagination
+        let paginationFilter: TransactionPageBasedPaginationFilter
 
-        func decode(data: Data) throws -> TransactionsResponse<NormalTransaction> {
+        func decode(data: Data) throws -> Response<NormalTransaction> {
             guard
                 let json = try? JSON(data: data),
                 let response = Oklink.TransactionListResponse<Oklink.Transaction>(json: json)
             else { throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "")) }
 
-            guard let transactionsData = response.data.first else { return .init(transactions: [], pagination: pagination) }
+            guard let transactionsData = response.data.first else { return .init(transactions: [], nextPage: pagination) }
 
             let transactions = transactionsData.transactionList.map { NormalTransaction(okLinkTransaction: $0) }
             let data = paginationFilter.process(transactions: transactions, pagination: pagination)
 
-            return .init(transactions: data.transactions, pagination: data.pagination)
+            return .init(transactions: data.transactions, nextPage: data.nexPage)
         }
     }
 

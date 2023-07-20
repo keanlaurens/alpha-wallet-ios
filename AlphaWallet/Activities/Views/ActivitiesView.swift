@@ -12,7 +12,7 @@ import AlphaWalletFoundation
 
 protocol ActivitiesViewDelegate: AnyObject {
     func didPressActivity(activity: Activity, in view: ActivitiesView)
-    func didPressTransaction(transaction: TransactionInstance, in view: ActivitiesView)
+    func didPressTransaction(transaction: Transaction, in view: ActivitiesView)
 }
 
 class ActivitiesView: UIView {
@@ -68,7 +68,7 @@ class ActivitiesView: UIView {
     func resetStatefulStateToReleaseObjectToAvoidMemoryLeak() {
         // NOTE: Stateful lib set to object state machine that later causes ref cycle when applying it to view
         // here we release all associated objects to release state machine
-        // this method callget get called while parent's view deinit get called
+        // this method is called while parent's view deinit get called
         objc_removeAssociatedObjects(self)
     }
 

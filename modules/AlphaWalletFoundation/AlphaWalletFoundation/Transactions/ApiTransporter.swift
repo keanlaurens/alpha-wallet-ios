@@ -12,18 +12,16 @@ import Combine
 public protocol ApiTransporter {
     func dataTaskPublisher(_ request: URLRequestConvertible) -> AnyPublisher<URLRequest.Response, SessionTaskError>
     func dataPublisher(_ request: URLRequestConvertible) -> AnyPublisher<DataResponsePublisher<Data>.Output, SessionTaskError>
+    func responseTaskPublisher(_ request: URLRequestConvertible) -> AnyPublisher<HTTPURLResponse, SessionTaskError>
 }
 
-final class ApiTransporterRetryPolicy: RetryPolicy {
+public typealias RetryPolicy = Alamofire.RetryPolicy
+public final class ApiTransporterRetryPolicy: RetryPolicy {
 
-    init() {
-        super.init(retryableHTTPStatusCodes: Set([429, 408, 500, 502, 503, 504]))
-    }
-
-    override func retry(_ request: Alamofire.Request,
-                        for session: Session,
-                        dueTo error: Error,
-                        completion: @escaping (RetryResult) -> Void) {
+    public override func retry(_ request: Alamofire.Request,
+                               for session: Session,
+                               dueTo error: Error,
+                               completion: @escaping (RetryResult) -> Void) {
 
         if request.retryCount < retryLimit, shouldRetry(request: request, dueTo: error) {
             if let httpResponse = request.response, let delay = ApiTransporterRetryPolicy.retryDelay(from: httpResponse) {
@@ -41,6 +39,12 @@ final class ApiTransporterRetryPolicy: RetryPolicy {
     }
 }
 
+extension ApiTransporterRetryPolicy {
+    public convenience init() {
+        self.init(retryableHTTPStatusCodes: [429, 408, 500, 502, 503, 504])
+    }
+}
+
 public class BaseApiTransporter: ApiTransporter {
 
     private let rootQueue = DispatchQueue(label: "org.alamofire.customQueue")
@@ -48,14 +52,12 @@ public class BaseApiTransporter: ApiTransporter {
 
     var maxPublishers: Int = 3//max concurrent tasks
 
-    public init(timeout: TimeInterval = 60) {
+    public init(timeout: TimeInterval = 60, policy: RetryPolicy = ApiTransporterRetryPolicy()) {
 
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = timeout
         configuration.timeoutIntervalForResource = timeout
         configuration.waitsForConnectivity = true
-
-        let policy = ApiTransporterRetryPolicy()
 
         let monitor = ClosureEventMonitor()
         monitor.requestDidCreateTask = { _, _ in
@@ -94,10 +96,30 @@ public class BaseApiTransporter: ApiTransporter {
                     .tryMap { respose in
                         if let data = respose.data, let httpResponse = respose.response {
                             return (data: data, response: httpResponse)
+                        } else if let error = respose.error {
+                            throw SessionTaskError(error: error)
                         } else {
                             throw SessionTaskError(error: NonHttpUrlResponseError(request: request))
                         }
                     }.mapError { SessionTaskError(error: $0) }
+            }.eraseToAnyPublisher()
+    }
+
+    public func responseTaskPublisher(_ request: URLRequestConvertible) -> AnyPublisher<HTTPURLResponse, SessionTaskError> {
+        Just(request)
+            .setFailureType(to: SessionTaskError.self)
+            .flatMap(maxPublishers: .max(maxPublishers)) { [session, rootQueue] request in
+                session.request(request)
+                    .validate()
+                    .publishData(queue: rootQueue)
+                    .tryMap { respose in
+                        if let httpResponse = respose.response {
+                            return httpResponse
+                        } else {
+                            throw SessionTaskError(error: NonHttpUrlResponseError(request: request))
+                        }
+                    }.mapError { SessionTaskError(error: $0) }
+
             }.eraseToAnyPublisher()
     }
 

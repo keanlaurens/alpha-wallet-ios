@@ -2,12 +2,13 @@
 
 import Foundation
 import UIKit
-import BigInt
-import PromiseKit
 import WebKit
 import Combine
 import AlphaWalletFoundation
 import AlphaWalletCore
+import AlphaWalletTokenScript
+import BigInt
+import PromiseKit
 
 protocol RequestSignMessageDelegate: AnyObject {
     func requestSignMessage(message: SignMessageType,
@@ -103,6 +104,7 @@ class TokenInstanceWebView: UIView, TokenScriptLocalRefsSource {
     func stopLoading() {
         webView.stopLoading()
     }
+    private var cancellable: AnyCancellable?
 
     //Implementation: String concatenation is slow, but it's not obvious at all
     func update(withTokenHolder tokenHolder: TokenHolder, cardLevelAttributeValues updatedCardLevelAttributeValues: [AttributeId: AssetAttributeSyntaxValue]? = nil, isFungible: Bool, isFirstUpdate: Bool = true) {
@@ -126,19 +128,11 @@ class TokenInstanceWebView: UIView, TokenScriptLocalRefsSource {
         tokenAttributeValues = AssetAttributeValues(attributeValues: tokenHolder.values)
         cardAttributeValues = AssetAttributeValues(attributeValues: unresolvedAttributesDependentOnProps.merging(cardLevelAttributeValues, uniquingKeysWith: { _, new in new }))
 
-        let resolvedTokenAttributeNameValues = tokenAttributeValues.resolve { [weak self] _ in
-            guard let strongSelf = self else { return }
-            guard isFirstUpdate else { return }
-            strongSelf.update(withTokenHolder: tokenHolder, isFungible: isFungible, isFirstUpdate: false)
-        }.merging(implicitAttributes(tokenHolder: tokenHolder, isFungible: isFungible)) { (_, new) in new }
-
-        let resolvedCardAttributeNameValues = cardAttributeValues.resolve { [weak self] _ in
-            guard let strongSelf = self else { return }
-            guard isFirstUpdate else { return }
-            strongSelf.update(withTokenHolder: tokenHolder, isFungible: isFungible, isFirstUpdate: false)
-        }
-
-        update(withId: tokenHolder.tokenIds[0], resolvedTokenAttributeNameValues: resolvedTokenAttributeNameValues, resolvedCardAttributeNameValues: resolvedCardAttributeNameValues, isFirstUpdate: isFirstUpdate)
+        cancellable?.cancel()
+        cancellable = Publishers.CombineLatest(tokenAttributeValues.resolveAllAttributes(), cardAttributeValues.resolveAllAttributes())
+            .sink { [weak self] resolvedTokenAttributeNameValues, resolvedCardAttributeNameValues in
+                self?.update(withId: tokenHolder.tokenIds[0], resolvedTokenAttributeNameValues: resolvedTokenAttributeNameValues, resolvedCardAttributeNameValues: resolvedCardAttributeNameValues, isFirstUpdate: isFirstUpdate)
+            }
     }
 
     func update(withId id: BigUInt, resolvedTokenAttributeNameValues: [AttributeId: AssetInternalValue], resolvedCardAttributeNameValues: [AttributeId: AssetInternalValue], isFirstUpdate: Bool = true) {
@@ -216,7 +210,7 @@ class TokenInstanceWebView: UIView, TokenScriptLocalRefsSource {
             .resolve(withTokenIdOrEvent: .tokenId(tokenId: tokenHolder.tokenIds[0]),
                      userEntryValues: .init(),
                      server: server,
-                     account: wallet,
+                     account: wallet.address,
                      additionalValues: .init(),
                      localRefs: localRefs,
                      attributes: attributes)

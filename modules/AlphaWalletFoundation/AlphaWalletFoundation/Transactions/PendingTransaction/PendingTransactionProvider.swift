@@ -6,12 +6,13 @@
 //
 
 import Foundation
+import AlphaWalletCore
 import BigInt
 import Combine
 
-final class PendingTransactionProvider {
+public final class PendingTransactionProvider {
 
-    enum PendingTransactionProviderError: Error {
+    public enum PendingTransactionProviderError: Error {
         case `internal`(Error)
         case failureToRetrieveTransaction(hash: String, error: Error)
     }
@@ -28,23 +29,23 @@ final class PendingTransactionProvider {
 
         return queue
     }()
-    private let completeTransactionSubject = PassthroughSubject<Result<TransactionInstance, PendingTransactionProviderError>, Never>()
+    private let completeTransactionSubject = PassthroughSubject<Result<Transaction, PendingTransactionProviderError>, Never>()
     private lazy var store: AtomicDictionary<String, SchedulerProtocol> = .init()
 
-    var completeTransaction: AnyPublisher<Result<TransactionInstance, PendingTransactionProviderError>, Never> {
+    public var completeTransaction: AnyPublisher<Result<Transaction, PendingTransactionProviderError>, Never> {
         completeTransactionSubject.eraseToAnyPublisher()
     }
 
-    init(session: WalletSession,
-         transactionDataStore: TransactionDataStore,
-         ercTokenDetector: ErcTokenDetector) {
+    public init(session: WalletSession,
+                transactionDataStore: TransactionDataStore,
+                ercTokenDetector: ErcTokenDetector) {
 
         self.session = session
         self.transactionDataStore = transactionDataStore
         self.ercTokenDetector = ercTokenDetector
     }
 
-    func start() {
+    public func start() {
         transactionDataStore
             .initialOrNewTransactionsPublisher(forServer: session.server, transactionState: .pending)
             .receive(on: queue)
@@ -52,7 +53,7 @@ final class PendingTransactionProvider {
             .store(in: &cancelable)
     }
 
-    func cancelScheduler() {
+    public func cancelScheduler() {
         queue.async {
             for each in self.store.values {
                 each.value.cancel()
@@ -60,10 +61,10 @@ final class PendingTransactionProvider {
         }
     }
 
-    func resumeScheduler() {
+    public func resumeScheduler() {
         queue.async {
             for each in self.store.values {
-                each.value.resume()
+                each.value.restart()
             }
         }
     }
@@ -74,37 +75,38 @@ final class PendingTransactionProvider {
         }
     }
 
-    private func runPendingTransactionWatchers(transactions: [TransactionInstance]) {
-        for each in transactions {
-            guard store[each.id] == nil else { continue }
+    private func runPendingTransactionWatchers(transactions: [Transaction]) {
+        guard !session.config.development.isAutoFetchingDisabled else { return }
+        for transaction in transactions {
+            guard store[transaction.id] == nil else { continue }
 
             let provider = PendingTransactionSchedulerProvider(
                 blockchainProvider: session.blockchainProvider,
-                transaction: each,
+                transaction: transaction,
                 fetchPendingTransactionsQueue: fetchPendingTransactionsQueue)
 
             provider.responsePublisher
                 .receive(on: queue)
-                .sink { [weak self] in self?.handle(response: $0, provider: provider) }
+                .sink { [weak self] in self?.handle(response: $0, transaction: transaction) }
                 .store(in: &cancelable)
 
             let scheduler = Scheduler(provider: provider)
             scheduler.start()
 
-            store[each.id] = scheduler
+            store[transaction.id] = scheduler
         }
     }
 
-    private func handle(response: Result<EthereumTransaction, SessionTaskError>, provider: PendingTransactionSchedulerProvider) {
+    private func handle(response: Result<EthereumTransaction, SessionTaskError>, transaction: Transaction) {
         switch response {
         case .success(let pendingTransaction):
-            handle(transaction: provider.transaction, pendingTransaction: pendingTransaction)
+            handle(transaction: transaction, pendingTransaction: pendingTransaction)
         case .failure(let error):
-            handle(error: error, transaction: provider.transaction)
+            handle(error: error, transaction: transaction)
         }
     }
 
-    private func handle(transaction: TransactionInstance, pendingTransaction: EthereumTransaction) {
+    private func handle(transaction: Transaction, pendingTransaction: EthereumTransaction) {
         transactionDataStore.update(state: .completed, for: transaction.primaryKey, pendingTransaction: pendingTransaction)
 
         ercTokenDetector.detect(from: [transaction])
@@ -116,13 +118,13 @@ final class PendingTransactionProvider {
         cancelScheduler(transaction: transaction)
     }
 
-    private func cancelScheduler(transaction: TransactionInstance) {
+    private func cancelScheduler(transaction: Transaction) {
         guard let scheduler = store[transaction.id] else { return }
         scheduler.cancel()
         store[transaction.id] = nil
     }
 
-    private func handle(error: SessionTaskError, transaction: TransactionInstance) {
+    private func handle(error: SessionTaskError, transaction: Transaction) {
         switch error {
         case .responseError(let error):
             // TODO: Think about the logic to handle pending transactions.
@@ -146,7 +148,7 @@ final class PendingTransactionProvider {
 }
 
 extension TransactionDataStore {
-    func initialOrNewTransactionsPublisher(forServer server: RPCServer, transactionState: TransactionState) -> AnyPublisher<[TransactionInstance], Never> {
+    func initialOrNewTransactionsPublisher(forServer server: RPCServer, transactionState: TransactionState) -> AnyPublisher<[Transaction], Never> {
         let predicate = TransactionDataStore.functional.transactionPredicate(server: server, transactionState: .pending)
         return transactionsChangeset(filter: .predicate(predicate), servers: [server])
             .map { changeset in

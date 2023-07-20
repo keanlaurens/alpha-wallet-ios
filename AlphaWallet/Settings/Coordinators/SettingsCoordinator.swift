@@ -4,6 +4,7 @@
 import Foundation
 import UIKit
 import AlphaWalletFoundation
+import AlphaWalletNotifications
 
 enum RestartReason {
     case walletChange
@@ -30,7 +31,7 @@ class SettingsCoordinator: Coordinator {
     private let walletBalanceService: WalletBalanceService
     private let blockscanChatService: BlockscanChatService
     private let blockiesGenerator: BlockiesGenerator
-    private let domainResolutionService: DomainResolutionServiceType
+    private let domainResolutionService: DomainNameResolutionServiceType
     private var account: Wallet {
         return sessionsProvider.activeSessions.anyValue.account
     }
@@ -40,6 +41,7 @@ class SettingsCoordinator: Coordinator {
     private let networkService: NetworkService
     private let promptBackup: PromptBackup
     private let serversProvider: ServersProvidable
+    private let pushNotificationsService: PushNotificationsService
 
     let navigationController: UINavigationController
     weak var delegate: SettingsCoordinatorDelegate?
@@ -49,10 +51,10 @@ class SettingsCoordinator: Coordinator {
         let viewModel = SettingsViewModel(
             account: account,
             lock: lock,
-            config: config,
             analytics: analytics,
             domainResolutionService: domainResolutionService,
-            promptBackup: promptBackup)
+            promptBackup: promptBackup,
+            pushNotificationsService: pushNotificationsService)
 
         let controller = SettingsViewController(viewModel: viewModel)
         controller.delegate = self
@@ -72,14 +74,16 @@ class SettingsCoordinator: Coordinator {
          walletBalanceService: WalletBalanceService,
          blockscanChatService: BlockscanChatService,
          blockiesGenerator: BlockiesGenerator,
-         domainResolutionService: DomainResolutionServiceType,
+         domainResolutionService: DomainNameResolutionServiceType,
          lock: Lock,
          currencyService: CurrencyService,
          tokenScriptOverridesFileManager: TokenScriptOverridesFileManager,
          networkService: NetworkService,
          promptBackup: PromptBackup,
-         serversProvider: ServersProvidable) {
+         serversProvider: ServersProvidable,
+         pushNotificationsService: PushNotificationsService) {
 
+        self.pushNotificationsService = pushNotificationsService
         self.serversProvider = serversProvider
         self.promptBackup = promptBackup
         self.networkService = networkService

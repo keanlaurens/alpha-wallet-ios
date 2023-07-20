@@ -11,40 +11,23 @@ import AlphaWalletCore
 
 extension Promise {
     public func publisher(queue: DispatchQueue = .main) -> AnyPublisher<T, PromiseError> {
-        var isCanceled: Bool = false
+        var strongSelf: Promise? = self
+
         let publisher = Deferred {
             Future<T, PromiseError> { seal in
-                guard !isCanceled else { return }
-                self.done(on: queue, { value in
+                strongSelf?.done(on: queue, { value in
                     seal(.success((value)))
                 }).catch(on: queue, { error in
                     seal(.failure(.some(error: error)))
+                }).finally(on: queue, {
+                    strongSelf = nil
                 })
             }
         }.handleEvents(receiveCancel: {
-            isCanceled = true
+            strongSelf = nil
         })
 
-        return publisher
-            .eraseToAnyPublisher()
-    }
-}
-
-extension AnyPublisher {
-    public func promise() -> Promise<Output> {
-        var cancellable: AnyCancellable?
-        return Promise<Output> { seal in
-            cancellable = self
-                .receive(on: RunLoop.main)
-                .sink { result in
-                    if case .failure(let error) = result {
-                        seal.reject(error)
-                    }
-                    cancellable = nil
-                } receiveValue: {
-                    seal.fulfill($0)
-                }
-        }
+        return publisher.eraseToAnyPublisher()
     }
 }
 
@@ -59,18 +42,6 @@ extension Publisher {
         var cancellable: AnyCancellable?
         cancellable = self
             .first()
-            .sink { result in
-                receiveCompletion(result)
-                cancellable = nil
-            } receiveValue: { value in
-                receiveValue(value)
-            }
-    }
-
-    public func sinkAsync(receiveCompletion: @escaping (Subscribers.Completion<Failure>) -> Void = { _ in }, receiveValue: @escaping (Output) -> Void = { _ in }) {
-        var cancellable: AnyCancellable?
-        cancellable = self
-            .handleEvents(receiveCancel: { cancellable = nil })
             .sink { result in
                 receiveCompletion(result)
                 cancellable = nil

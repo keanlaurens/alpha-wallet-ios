@@ -16,7 +16,7 @@ class ImportWalletViewController: UIViewController {
 
     private let keystore: Keystore
     private let analytics: AnalyticsLogger
-    private let domainResolutionService: DomainResolutionServiceType
+    private let domainResolutionService: DomainNameResolutionServiceType
     private let viewModel = ImportWalletViewModel()
 
     private lazy var containerView: ScrollableStackView = {
@@ -85,7 +85,7 @@ class ImportWalletViewController: UIViewController {
         return textView
     }()
     lazy var watchAddressTextField: AddressTextField = {
-        let textField = AddressTextField(domainResolutionService: domainResolutionService)
+        let textField = AddressTextField(server: RPCServer.forResolvingDomainNames, domainResolutionService: domainResolutionService)
         textField.inputAccessoryButtonType = .done
         textField.delegate = self
         textField.returnKeyType = .done
@@ -140,7 +140,7 @@ class ImportWalletViewController: UIViewController {
         let cv = UICollectionView(frame: frame, collectionViewLayout: layout)
         cv.contentInset = UIEdgeInsets(top: 0, left: 10, bottom: 0, right: 10)
         cv.register(SeedPhraseSuggestionViewCell.self)
-        cv.backgroundColor = viewModel.backgroundColor
+        cv.backgroundColor = Configuration.Color.Semantic.defaultViewBackground
         cv.showsHorizontalScrollIndicator = false
         cv.delegate = self
 
@@ -165,25 +165,9 @@ class ImportWalletViewController: UIViewController {
         return buttonsBar.buttons[1]
     }
 
-    private lazy var footerBar: UIView = {
-        let footerBar = UIView()
-        footerBar.translatesAutoresizingMaskIntoConstraints = false
-        footerBar.backgroundColor = .clear
-        footerBar.addSubview(buttonsBar)
-
-        NSLayoutConstraint.activate([
-            buttonsBar.topAnchor.constraint(equalTo: footerBar.topAnchor),
-            buttonsBar.bottomAnchor.constraint(equalTo: footerBar.bottomAnchor),
-            buttonsBar.leadingAnchor.constraint(equalTo: footerBar.leadingAnchor, constant: 20),
-            buttonsBar.trailingAnchor.constraint(equalTo: footerBar.trailingAnchor, constant: -20),
-        ])
-
-        return footerBar
-    }()
-
     weak var delegate: ImportWalletViewControllerDelegate?
 
-    init(keystore: Keystore, analytics: AnalyticsLogger, domainResolutionService: DomainResolutionServiceType) {
+    init(keystore: Keystore, analytics: AnalyticsLogger, domainResolutionService: DomainNameResolutionServiceType) {
         self.keystore = keystore
         self.analytics = analytics
         self.domainResolutionService = domainResolutionService
@@ -205,6 +189,8 @@ class ImportWalletViewController: UIViewController {
         view.addSubview(tabBar)
         view.addSubview(containerView)
         view.addSubview(importSeedDescriptionLabel)
+
+        let footerBar = ButtonsBarBackgroundView(buttonsBar: buttonsBar, separatorHeight: 0)
         view.addSubview(footerBar)
 
         let heightThatFitsPrivateKeyNicely = ScreenChecker.size(big: 100, medium: 100, small: 80)
@@ -233,9 +219,7 @@ class ImportWalletViewController: UIViewController {
             containerView.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
             containerView.bottomAnchor.constraint(equalTo: footerBar.topAnchor),
 
-            footerBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            footerBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            bottomConstraint,
+            footerBar.anchorsConstraint(to: view)
         ])
 
         configure()
@@ -287,7 +271,7 @@ class ImportWalletViewController: UIViewController {
     }
 
     private func configure() {
-        view.backgroundColor = viewModel.backgroundColor
+        view.backgroundColor = Configuration.Color.Semantic.defaultViewBackground
 
         mnemonicTextView.label.text = viewModel.mnemonicLabel
         mnemonicCountLabel.text = "\(mnemonicInput.count)"
@@ -337,7 +321,7 @@ class ImportWalletViewController: UIViewController {
     private func validateMnemonic() -> Bool {
         mnemonicTextView.errorState = .none
         var msg: String
-        if Features.default.isAvailable(.is24SeedWordPhraseAllowed) {
+        if Features.current.isAvailable(.is24SeedWordPhraseAllowed) {
             msg = R.string.localizable.importWalletImportInvalidMnemonicCount24()
         } else {
             msg = R.string.localizable.importWalletImportInvalidMnemonicCount12()
@@ -466,8 +450,7 @@ class ImportWalletViewController: UIViewController {
         let alertController = UIAlertController(
             title: R.string.localizable.importWalletImportAlertSheetTitle(),
             message: .none,
-            preferredStyle: .actionSheet
-        )
+            preferredStyle: .actionSheet)
         alertController.popoverPresentationController?.sourceView = sender
         alertController.popoverPresentationController?.sourceRect = sender.bounds
         alertController.addAction(UIAlertAction(

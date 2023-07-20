@@ -3,28 +3,23 @@
 import XCTest
 @testable import AlphaWallet
 import Combine
+import AlphaWalletCore
 import AlphaWalletFoundation
 
 extension WalletConnectCoordinator {
 
     static func fake() -> WalletConnectCoordinator {
         let keystore = FakeEtherKeystore(wallets: [.make()])
-        let dependencies = AtomicDictionary<Wallet, AppCoordinator.WalletDependencies>(value: [
+        let dependencies = AtomicDictionary<Wallet, WalletDependencies>(value: [
             .make(): WalletDataProcessingPipeline.make(wallet: .make(), server: .main)
         ])
 
         let provider = WalletConnectProvider(keystore: keystore, config: .make(), dependencies: dependencies)
 
         return WalletConnectCoordinator(
-            keystore: keystore,
             navigationController: .init(),
             analytics: FakeAnalyticsService(),
-            domainResolutionService: FakeDomainResolutionService(),
-            config: .make(),
-            assetDefinitionStore: .make(),
-            networkService: FakeNetworkService(),
             walletConnectProvider: provider,
-            dependencies: dependencies,
             restartHandler: RestartQueueHandler(),
             serversProvider: BaseServersProvider())
     }
@@ -57,7 +52,7 @@ class ConfigTests: XCTestCase {
             analytics: FakeAnalyticsService(),
             tokenActionsService: tokenActionsService,
             walletConnectCoordinator: .fake(),
-            coinTickersFetcher: CoinTickersFetcherImpl.make(),
+            coinTickersProvider: CoinTickers.make(),
             activitiesService: FakeActivitiesService(),
             walletBalanceService: FakeMultiWalletBalanceService(),
             tokenCollection: dep1.pipeline,
@@ -77,17 +72,19 @@ class ConfigTests: XCTestCase {
 
     func testTabBarItemTitle() {
         Config.setLocale(AppLocale.english)
-
-        let coordinator_1 = AppCoordinator(
-            window: .init(),
+        let app1 = Application(
             analytics: FakeAnalyticsService(),
             keystore: FakeEtherKeystore(
                 wallets: [.make()],
                 recentlyUsedWallet: .make()
             ),
-            navigationController: FakeNavigationController(),
             securedStorage: KeychainStorage.make(),
             legacyFileBasedKeystore: .make())
+
+        let coordinator_1 = AppCoordinator(
+            window: .init(),
+            navigationController: FakeNavigationController(),
+            application: app1)
 
         coordinator_1.start()
 
@@ -96,16 +93,19 @@ class ConfigTests: XCTestCase {
 
         Config.setLocale(AppLocale.simplifiedChinese)
 
-        let coordinator_2 = AppCoordinator(
-            window: .init(),
+        let app2 = Application(
             analytics: FakeAnalyticsService(),
             keystore: FakeEtherKeystore(
                 wallets: [.make()],
                 recentlyUsedWallet: .make()
             ),
-            navigationController: FakeNavigationController(),
             securedStorage: KeychainStorage.make(),
             legacyFileBasedKeystore: .make())
+
+        let coordinator_2 = AppCoordinator(
+            window: .init(),
+            navigationController: FakeNavigationController(),
+            application: app2)
 
         coordinator_2.start()
 

@@ -15,7 +15,7 @@ final class DappBrowserCoordinator: NSObject, Coordinator {
     private let sessionsProvider: SessionsProvider
     private var config: Config
     private let analytics: AnalyticsLogger
-    private let domainResolutionService: DomainResolutionServiceType
+    private let domainResolutionService: DomainNameResolutionServiceType
     private var browserNavBar: DappBrowserNavigationBar? {
         return navigationController.navigationBar as? DappBrowserNavigationBar
     }
@@ -58,7 +58,7 @@ final class DappBrowserCoordinator: NSObject, Coordinator {
          config: Config,
          browserOnly: Bool,
          analytics: AnalyticsLogger,
-         domainResolutionService: DomainResolutionServiceType,
+         domainResolutionService: DomainNameResolutionServiceType,
          bookmarksStore: BookmarksStore,
          browserHistoryStorage: BrowserHistoryStorage,
          wallet: Wallet,
@@ -85,7 +85,7 @@ final class DappBrowserCoordinator: NSObject, Coordinator {
     }
 
     func start() {
-        //If we hit a bug where the stack doesn't change immediately, be sure that we haven't changed the stack (eg. push/pop) with animation and it hasn't comppleted yet
+        //If we hit a bug where the stack doesn't change immediately, be sure that we haven't changed the stack (eg. push/pop) with animation and it hasn't completed yet
         navigationController.viewControllers = [rootViewController]
     }
 
@@ -116,7 +116,11 @@ final class DappBrowserCoordinator: NSObject, Coordinator {
     }
 
     private func createBrowserViewController() -> BrowserViewController {
-        let viewModel = BrowserViewModel(wallet: wallet, server: server)
+        let viewModel = BrowserViewModel(
+            wallet: wallet,
+            server: server,
+            browserOnly: browserOnly)
+
         let browserViewController = BrowserViewController(viewModel: viewModel)
         browserViewController.delegate = self
         browserViewController.webView.uiDelegate = self
@@ -785,7 +789,7 @@ extension DappBrowserCoordinator: ScanQRCodeCoordinatorDelegate {
         removeCoordinator(coordinator)
     }
 
-    func didScan(result: String, in coordinator: ScanQRCodeCoordinator) {
+    func didScan(result: String, decodedValue: QrCodeValue, in coordinator: ScanQRCodeCoordinator) {
         removeCoordinator(coordinator)
 
         guard let url = URL(string: result) else { return }

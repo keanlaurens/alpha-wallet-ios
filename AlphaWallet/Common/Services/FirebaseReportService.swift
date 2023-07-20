@@ -6,6 +6,7 @@
 //
 import FirebaseCore
 import FirebaseCrashlytics
+import func AlphaWalletCore.isRunningTests
 import AlphaWalletFoundation
 import AlphaWalletLogger
 
@@ -105,6 +106,8 @@ extension AlphaWallet {
                     if result == nil && hasLargeFileSize {
                         result = hasLargeFileSize
                     }
+                case .deleteDeletedContracts, .addOrUpdateDeletedContracts, .addOrUpdateDelegateContracts:
+                    break
                 }
             }
 

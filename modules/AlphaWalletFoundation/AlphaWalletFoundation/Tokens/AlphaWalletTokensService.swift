@@ -7,29 +7,20 @@
 
 import Foundation
 import Combine
+import AlphaWalletWeb3
 import CombineExt
 
 public class AlphaWalletTokensService: TokensService {
     private var cancelable = Set<AnyCancellable>()
     private let providers: CurrentValueSubject<ServerDictionary<TokenSourceProvider>, Never> = .init(.init())
-    private let autoDetectTransactedTokensQueue: OperationQueue = {
-        let queue = OperationQueue()
-        queue.name = "Auto-detect Transacted Tokens"
-        queue.maxConcurrentOperationCount = 1
-        return queue
-    }()
-    private let autoDetectTokensQueue: OperationQueue = {
-        let queue = OperationQueue()
-        queue.name = "Auto-detect Tokens"
-        queue.maxConcurrentOperationCount = 1
-        return queue
-    }()
     private let sessionsProvider: SessionsProvider
     private let analytics: AnalyticsLogger
     private let tokensDataStore: TokensDataStore
     private let transactionsStorage: TransactionDataStore
     private let assetDefinitionStore: AssetDefinitionStore
     private let transporter: ApiTransporter
+    private let fetchTokenScriptFiles: FetchTokenScriptFiles
+    private lazy var tokenRepairService = TokenRepairService(tokensDataStore: tokensDataStore, sessionsProvider: sessionsProvider)
 
     public lazy var tokensPublisher: AnyPublisher<[Token], Never> = {
         providers.map { $0.values }
@@ -43,7 +34,7 @@ public class AlphaWalletTokensService: TokensService {
     }()
 
     public func tokensChangesetPublisher(servers: [RPCServer]) -> AnyPublisher<ChangeSet<[Token]>, Never> {
-        tokensDataStore.tokensChangesetPublisher(for: servers)
+        tokensDataStore.tokensChangesetPublisher(for: servers, predicate: nil)
     }
 
     public var tokens: [Token] {
@@ -53,6 +44,13 @@ public class AlphaWalletTokensService: TokensService {
     public lazy var addedTokensPublisher: AnyPublisher<[Token], Never> = {
         providers.map { $0.values }
             .flatMapLatest { $0.map { $0.addedTokensPublisher }.merge() }
+            .eraseToAnyPublisher()
+    }()
+
+    /// Fires each time we recreate token source, e.g when servers are chenging
+    public lazy var providersHasChanged: AnyPublisher<Void, Never> = {
+        providers.filter { !$0.isEmpty }
+            .mapToVoid()
             .eraseToAnyPublisher()
     }()
 
@@ -69,6 +67,10 @@ public class AlphaWalletTokensService: TokensService {
         self.analytics = analytics
         self.transactionsStorage = transactionsStorage
         self.assetDefinitionStore = assetDefinitionStore
+        self.fetchTokenScriptFiles = FetchTokenScriptFiles(
+            assetDefinitionStore: assetDefinitionStore,
+            tokensDataStore: tokensDataStore,
+            sessionsProvider: sessionsProvider)
     }
 
     public func tokens(for servers: [RPCServer]) -> [Token] {
@@ -96,8 +98,6 @@ public class AlphaWalletTokensService: TokensService {
     public func stop() {
         //NOTE: TokenBalanceFetcher has strong ref to Tokens Service, so we need to remove fetchers manually
         providers.value = .init()
-        autoDetectTransactedTokensQueue.cancelAllOperations()
-        autoDetectTokensQueue.cancelAllOperations()
     }
 
     public func start() {
@@ -118,6 +118,9 @@ public class AlphaWalletTokensService: TokensService {
                 return providers
             }.assign(to: \.value, on: providers, ownership: .weak)
             .store(in: &cancelable)
+
+        fetchTokenScriptFiles.start()
+        //tokenRepairService.start()
     }
 
     private func buildTokenSource(session: WalletSession) -> TokenSourceProvider {
@@ -133,18 +136,12 @@ public class AlphaWalletTokensService: TokensService {
 
         return ClientSideTokenSourceProvider(
             session: session,
-            autoDetectTransactedTokensQueue: autoDetectTransactedTokensQueue,
-            autoDetectTokensQueue: autoDetectTokensQueue,
             tokensDataStore: tokensDataStore,
             balanceFetcher: balanceFetcher)
     }
 
     deinit {
         stop()
-    }
-
-    public func addOrUpdate(tokensOrContracts: [TokenOrContract]) -> [Token] {
-        tokensDataStore.addOrUpdate(tokensOrContracts: tokensOrContracts)
     }
 
     public func addOrUpdate(with actions: [AddOrUpdateTokenAction]) -> [Token] {

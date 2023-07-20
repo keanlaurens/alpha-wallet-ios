@@ -2,6 +2,7 @@
 
 import Foundation
 import Combine
+import AlphaWalletCore
 
 public class TransactionsService {
     private let transactionDataStore: TransactionDataStore
@@ -10,29 +11,24 @@ public class TransactionsService {
     private let analytics: AnalyticsLogger
     private var providers: [RPCServer: SingleChainTransactionProvider] = [:]
     private let config: Config
-    private let fetchLatestTransactionsQueue: OperationQueue = {
-        let queue = OperationQueue()
-        queue.name = "Fetch Latest Transactions"
-            //A limit is important for many reasons. One of which is Etherscan has a rate limit of 5 calls/sec/IP address according to https://etherscan.io/apis
-        queue.maxConcurrentOperationCount = 3
-        return queue
-    }()
 
-    public var transactionsChangeset: AnyPublisher<[TransactionInstance], Never> {
+    public func transactions(filter: TransactionsFilterStrategy) -> AnyPublisher<[Transaction], Never> {
         return sessionsProvider.sessions
-            .flatMapLatest { [transactionDataStore] sessions -> AnyPublisher<[TransactionInstance], Never> in
+            .flatMapLatest { [transactionDataStore] sessions -> AnyPublisher<[Transaction], Never> in
                 let servers = sessions.values.map { $0.server }
                 return transactionDataStore
-                    .transactionsChangeset(filter: .all, servers: servers)
-                    .map { change -> [TransactionInstance] in
-                        switch change {
+                    .transactionsChangeset(filter: filter, servers: servers)
+                    .map { changeset -> [Transaction] in
+                        switch changeset {
                         case .initial(let transactions): return transactions
-                        case .update(let transactions, _, _, _): return transactions
-                        case .error: return []
+                        case .error: return .init()
+                        case .update(let transactions, let deletions, let insertions, let modifications):
+                            return insertions.map { transactions[$0] } + modifications.map { transactions[$0] } - deletions.map { transactions[$0] }
                         }
                     }.eraseToAnyPublisher()
             }.eraseToAnyPublisher()
     }
+
     private var cancelable = Set<AnyCancellable>()
     private let networkService: NetworkService
     private let assetDefinitionStore: AssetDefinitionStore
@@ -58,17 +54,15 @@ public class TransactionsService {
             .sink { [weak self] state in
                 switch state {
                 case .didEnterBackground:
-                    self?.stopTimers()
+                    self?.pause()
                 case .willEnterForeground:
-                    self?.restartTimers()
+                    self?.resume()
                 }
             }.store(in: &cancelable)
 
         sessionsProvider.sessions
             .map { [weak self] sessions -> [RPCServer: SingleChainTransactionProvider] in
                 guard let strongSelf = self else { return [:] }
-
-                let servers = sessions.map { $0.key }
 
                 var providers: [RPCServer: SingleChainTransactionProvider] = [:]
                 for session in sessions {
@@ -79,18 +73,14 @@ public class TransactionsService {
                     }
                 }
                 return providers
-            }.handleEvents(receiveOutput: { [weak self] in self?.stopDeleted(except: $0) })
+            }.handleEvents(receiveOutput: { [weak self] in self?.pauseDeleted(except: $0) })
             .assign(to: \.providers, on: self)
             .store(in: &cancelable)
     }
 
-    private func stopDeleted(except providers: [RPCServer: SingleChainTransactionProvider]) {
+    private func pauseDeleted(except providers: [RPCServer: SingleChainTransactionProvider]) {
         let providersToStop = self.providers.keys.filter { !providers.keys.contains($0) }.compactMap { self.providers[$0] }
-        providersToStop.forEach { $0.stop() }
-    }
-
-    deinit {
-        fetchLatestTransactionsQueue.cancelAllOperations()
+        providersToStop.forEach { $0.pause() }
     }
 
     private func buildTransactionProvider(for session: WalletSession) -> SingleChainTransactionProvider {
@@ -101,40 +91,25 @@ public class TransactionsService {
             assetDefinitionStore: assetDefinitionStore)
 
         switch session.server.transactionsSource {
-        case .etherscan:
+        case .blockscout, .etherscan:
             let transporter = BaseApiTransporter()
             let provider = EtherscanSingleChainTransactionProvider(
                 session: session,
                 analytics: analytics,
                 transactionDataStore: transactionDataStore,
-                tokensService: tokensService,
-                fetchLatestTransactionsQueue: fetchLatestTransactionsQueue,
                 ercTokenDetector: ercTokenDetector,
-                apiNetworking: session.apiNetworking)
+                blockchainExplorer: session.blockchainExplorer)
 
             provider.start()
 
             return provider
-        case .covalent(let apiKey):
+        case .covalent, .oklink, .unknown:
             let provider = TransactionProvider(
                 session: session,
                 analytics: analytics,
                 transactionDataStore: transactionDataStore,
                 ercTokenDetector: ercTokenDetector,
-                networking: session.apiNetworking,
-                defaultPagination: session.server.defaultTransactionsPagination)
-
-            provider.start()
-
-            return provider
-        case .oklink(let apiKey):
-            let provider = TransactionProvider(
-                session: session,
-                analytics: analytics,
-                transactionDataStore: transactionDataStore,
-                ercTokenDetector: ercTokenDetector,
-                networking: session.apiNetworking,
-                defaultPagination: session.server.defaultTransactionsPagination)
+                networking: session.blockchainExplorer)
 
             provider.start()
 
@@ -142,27 +117,48 @@ public class TransactionsService {
         }
     }
 
-    @objc private func stopTimers() {
+    @objc private func pause() {
         for each in providers {
-            each.value.stopTimers()
+            each.value.pause()
         }
     }
 
-    @objc private func restartTimers() {
+    @objc private func resume() {
         guard !config.development.isAutoFetchingDisabled else { return }
 
         for each in providers {
-            each.value.runScheduledTimers()
+            each.value.resume()
         }
     }
 
-    public func transactionPublisher(for transactionId: String, server: RPCServer) -> AnyPublisher<TransactionInstance?, Never> {
+    // when we receive a push notification in background we want to fetch latest transactions,
+    public func fetchLatestTransactions(server: RPCServer) -> AnyPublisher<[Transaction], PromiseError> {
+        guard let provider = providers[server] else { return .empty() }
+
+        return provider.fetchLatestTransactions(fetchTypes: TransactionFetchType.allCases)
+    }
+
+    public func forceResumeOrStart(server: RPCServer) {
+        guard let provider = providers[server] else { return }
+
+        switch provider.state {
+        case .pending:
+            provider.start()
+        case .running:
+            provider.pause()
+            provider.resume()
+        case .stopped:
+            provider.resume()
+        }
+    }
+
+    public func transactionPublisher(for transactionId: String, server: RPCServer) -> AnyPublisher<Transaction?, Never> {
         transactionDataStore.transactionPublisher(for: transactionId, server: server)
             .replaceError(with: nil)
             .eraseToAnyPublisher()
     }
 
-    public func transaction(withTransactionId transactionId: String, forServer server: RPCServer) -> TransactionInstance? {
+    public func transaction(withTransactionId transactionId: String, forServer server: RPCServer) -> Transaction? {
         transactionDataStore.transaction(withTransactionId: transactionId, forServer: server)
     }
 
@@ -171,21 +167,8 @@ public class TransactionsService {
 
         TransactionDataStore.pendingTransactionsInformation[transaction.id] = (server: transaction.original.server, data: transaction.original.data, transactionType: transaction.original.transactionType, gasPrice: transaction.original.gasPrice)
         let token = transaction.original.to.flatMap { tokensService.token(for: $0, server: transaction.original.server) }
-        let transaction = TransactionInstance.from(from: session.account.address, transaction: transaction, token: token)
-        
-        transactionDataStore.add(transactions: [transaction])
-    }
-}
+        let transaction = Transaction.from(from: session.account.address, transaction: transaction, token: token)
 
-extension RPCServer {
-    var defaultTransactionsPagination: TransactionsPagination {
-        switch transactionsSource {
-        case .etherscan:
-            return .init(page: 0, lastFetched: [], limit: 200)
-        case .covalent:
-            return .init(page: 0, lastFetched: [], limit: 500)
-        case .oklink:
-            return .init(page: 0, lastFetched: [], limit: 50)
-        }
+        transactionDataStore.add(transactions: [transaction])
     }
 }

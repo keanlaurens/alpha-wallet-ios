@@ -7,9 +7,10 @@
 
 import Foundation
 import Combine
+import AlphaWalletCore
 import BigInt
 
-public protocol TokenImportable {
+public protocol TokenImportable: AnyObject {
     func importToken(ercToken: ErcToken, shouldUpdateBalance: Bool) -> Token
     func importToken(for contract: AlphaWallet.Address, onlyIfThereIsABalance: Bool) -> AnyPublisher<Token, ImportToken.ImportTokenError>
 }
@@ -35,8 +36,7 @@ extension TokenOrContractFetchable {
     }
 }
 
-//NOTE: actually its internal, public for tests
-public protocol ContractDataFetchable {
+public protocol ContractDataFetchable: AnyObject {
     func fetchContractData(for contract: AlphaWallet.Address) -> AnyPublisher<ContractData, Never>
 }
 
@@ -99,7 +99,6 @@ final public class ImportToken: TokenImportable, TokenOrContractFetchable {
     private let contractDataFetcher: ContractDataFetchable
     private let tokensDataStore: TokensDataStore
     private let queue = DispatchQueue(label: "org.alphawallet.swift.importToken")
-
     private var inFlightPublishers: [String: AnyPublisher<TokenOrContract, ImportTokenError>] = [:]
     private let reachability: ReachabilityManagerProtocol
     private let server: RPCServer
@@ -115,6 +114,10 @@ final public class ImportToken: TokenImportable, TokenOrContractFetchable {
         self.contractDataFetcher = contractDataFetcher
     }
 
+    func stop() {
+        inFlightPublishers.removeAll()
+    }
+
     public func importToken(for contract: AlphaWallet.Address, onlyIfThereIsABalance: Bool = false) -> AnyPublisher<Token, ImportTokenError> {
         return Just(server)
             .receive(on: queue)
@@ -126,7 +129,8 @@ final public class ImportToken: TokenImportable, TokenOrContractFetchable {
                     return self.fetchTokenOrContract(for: contract, onlyIfThereIsABalance: onlyIfThereIsABalance)
                         .flatMap { tokenOrContract -> AnyPublisher<Token, ImportTokenError> in
                             //FIXME: looks like blocking access to realm doesn't work well, after adding a new token and retrieving its value from bd it returns nil, adding delay in 1 sec helps to return a new token.
-                            if let token = tokensDataStore.addOrUpdate(tokensOrContracts: [tokenOrContract]).first {
+                            let action = AddOrUpdateTokenAction(tokenOrContract)
+                            if let token = tokensDataStore.addOrUpdate(with: [action]).first {
                                 return .just(token)
                                     .delay(for: .seconds(1), scheduler: queue)
                                     .eraseToAnyPublisher()
@@ -154,6 +158,7 @@ final public class ImportToken: TokenImportable, TokenOrContractFetchable {
             .receive(on: queue)
             .setFailureType(to: ImportTokenError.self)
             .flatMap { [weak self, queue, server, contractDataFetcher] contract -> AnyPublisher<TokenOrContract, ImportTokenError> in
+                guard let strongSelf = self else { return .empty() }
                 //Useful to check because we are/might action-only TokenScripts for native crypto currency
                 guard contract != Constants.nativeCryptoAddressInDatabase else {
                     return .fail(ImportTokenError.nativeCryptoNotSupported)
@@ -161,7 +166,7 @@ final public class ImportToken: TokenImportable, TokenOrContractFetchable {
 
                 let key = "\(contract.hashValue)-\(onlyIfThereIsABalance)-\(server)"
 
-                if let publisher = self?.inFlightPublishers[key] {
+                if let publisher = strongSelf.inFlightPublishers[key] {
                     return publisher
                 } else {
                     let publisher = contractDataFetcher.fetchContractData(for: contract)
@@ -204,25 +209,39 @@ final public class ImportToken: TokenImportable, TokenOrContractFetchable {
                                 return .ercToken(ercToken)
                             case .delegateTokenComplete:
                                 return .delegateContracts([AddressAndRPCServer(address: contract, server: server)])
-                            case .failed(let networkReachable, let error):
+                            case .failed(let error):
                                 //Receives first received error, e.g name, symbol, token type, decimals
-                                //TODO: maybe its need to handle some cases of error here?
-                                if networkReachable {
-                                    return .deletedContracts([AddressAndRPCServer(address: contract, server: server)])
-                                } else {
-                                    throw ImportTokenError.internal(error: error)
-                                }
+                                return try strongSelf.handle(error: error, contract: contract, server: server)
                             }
                         }.mapError { ImportToken.ImportTokenError(error: $0) }
                         .receive(on: queue)
-                        .handleEvents(receiveCompletion: { _ in self?.inFlightPublishers[key] = nil })
+                        .handleEvents(receiveCompletion: { _ in strongSelf.inFlightPublishers[key] = nil })
                         .share()
                         .eraseToAnyPublisher()
 
-                    self?.inFlightPublishers[key] = publisher
+                    strongSelf.inFlightPublishers[key] = publisher
 
                     return publisher
                 }
             }.eraseToAnyPublisher()
+    }
+
+    private func handle(error: ContractDataDetectorError, contract: AlphaWallet.Address, server: RPCServer) throws -> TokenOrContract {
+        switch error {
+        case .symbolIsEmpty:
+            return .deletedContracts([AddressAndRPCServer(address: contract, server: server)])
+        case .nodeError(let message, let call):
+            if message.lowercased().contains("execution reverted") {
+                return .deletedContracts([AddressAndRPCServer(address: contract, server: server)])
+            } else {
+                throw ImportTokenError.internal(error: error)
+            }
+        case .other(_, let networkReachable, _):
+            if networkReachable {
+                return .deletedContracts([AddressAndRPCServer(address: contract, server: server)])
+            } else {
+                throw ImportTokenError.internal(error: error)
+            }
+        }
     }
 }

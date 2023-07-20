@@ -14,7 +14,7 @@ protocol FungibleTokenCoordinatorDelegate: AnyObject, CanOpenURL {
     func didTapBridge(token: Token, service: TokenActionProvider, in coordinator: FungibleTokenCoordinator)
     func didTapBuy(token: Token, service: TokenActionProvider, in coordinator: FungibleTokenCoordinator)
     func didPress(for type: PaymentFlow, viewController: UIViewController, in coordinator: FungibleTokenCoordinator)
-    func didTap(transaction: TransactionInstance, viewController: UIViewController, in coordinator: FungibleTokenCoordinator)
+    func didTap(transaction: Transaction, viewController: UIViewController, in coordinator: FungibleTokenCoordinator)
     func didTap(activity: Activity, viewController: UIViewController, in coordinator: FungibleTokenCoordinator)
 
     func didClose(in coordinator: FungibleTokenCoordinator)
@@ -25,7 +25,7 @@ class FungibleTokenCoordinator: Coordinator {
     private let assetDefinitionStore: AssetDefinitionStore
     private let analytics: AnalyticsLogger
     private let tokenActionsProvider: SupportedTokenActionsProvider
-    private let coinTickersFetcher: CoinTickersFetcher
+    private let coinTickersProvider: CoinTickersProvider
     private let activitiesService: ActivitiesServiceType
     private let sessionsProvider: SessionsProvider
     private let session: WalletSession
@@ -62,7 +62,7 @@ class FungibleTokenCoordinator: Coordinator {
          assetDefinitionStore: AssetDefinitionStore,
          analytics: AnalyticsLogger,
          tokenActionsProvider: SupportedTokenActionsProvider,
-         coinTickersFetcher: CoinTickersFetcher,
+         coinTickersProvider: CoinTickersProvider,
          activitiesService: ActivitiesServiceType,
          alertService: PriceAlertServiceType,
          tokensPipeline: TokensProcessingPipeline,
@@ -83,7 +83,7 @@ class FungibleTokenCoordinator: Coordinator {
         self.assetDefinitionStore = assetDefinitionStore
         self.analytics = analytics
         self.tokenActionsProvider = tokenActionsProvider
-        self.coinTickersFetcher = coinTickersFetcher
+        self.coinTickersProvider = coinTickersProvider
         self.activitiesService = activitiesService
         self.alertService = alertService
     }
@@ -94,7 +94,7 @@ class FungibleTokenCoordinator: Coordinator {
 
         navigationController.pushViewController(rootViewController, animated: true)
     }
-    
+
     private func buildViewController(tabBarItem: FungibleTokenTabViewModel.TabBarItem) -> UIViewController {
         switch tabBarItem {
         case .details:
@@ -115,7 +115,7 @@ class FungibleTokenCoordinator: Coordinator {
             sessionsProvider: sessionsProvider,
             assetDefinitionStore: assetDefinitionStore,
             tokenImageFetcher: tokenImageFetcher)
-        
+
         viewController.delegate = self
 
         //FIXME: replace later with moving it to `ActivitiesViewController`
@@ -125,7 +125,7 @@ class FungibleTokenCoordinator: Coordinator {
             .sink { [viewController] in
                 viewController.configure(viewModel: $0.activitiesViewModel)
             }.store(in: &cancelable)
-        
+
         activitiesService.start()
 
         return viewController
@@ -142,14 +142,14 @@ class FungibleTokenCoordinator: Coordinator {
     private func buildDetailsViewController() -> UIViewController {
         lazy var viewModel = FungibleTokenDetailsViewModel(
             token: token,
-            coinTickersFetcher: coinTickersFetcher,
+            coinTickersProvider: coinTickersProvider,
             tokensService: tokensPipeline,
             session: session,
             assetDefinitionStore: assetDefinitionStore,
             tokenActionsProvider: tokenActionsProvider,
             currencyService: currencyService,
             tokenImageFetcher: tokenImageFetcher)
-        
+
         let viewController = FungibleTokenDetailsViewController(viewModel: viewModel)
         viewController.delegate = self
 
@@ -238,7 +238,7 @@ extension FungibleTokenCoordinator: ActivitiesViewControllerDelegate {
         delegate?.didTap(activity: activity, viewController: viewController, in: self)
     }
 
-    func didPressTransaction(transaction: AlphaWalletFoundation.TransactionInstance, in viewController: ActivitiesViewController) {
+    func didPressTransaction(transaction: AlphaWalletFoundation.Transaction, in viewController: ActivitiesViewController) {
         delegate?.didTap(transaction: transaction, viewController: viewController, in: self)
     }
 }

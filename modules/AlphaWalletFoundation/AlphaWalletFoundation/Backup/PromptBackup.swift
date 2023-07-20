@@ -126,7 +126,7 @@ public class PromptBackup {
         showHideCurrentPrompt(wallet: wallet)
     }
 
-    private func showCreateBackupAfterReceiveNativeCryptoCurrencyPrompt(wallet: Wallet, etherReceived: BigInt) {
+    public func showCreateBackupAfterReceiveNativeCryptoCurrencyPrompt(wallet: Wallet, etherReceived: BigInt) {
         guard canBackupWallet(wallet: wallet) else { return }
         guard !isBackedUp(wallet: wallet) else { return }
         guard !isImported(wallet: wallet) else { return }
@@ -197,8 +197,6 @@ public class PromptBackup {
     public func remindLater(wallet: Wallet) {
         defer { showHideCurrentPrompt(wallet: wallet) }
         guard canBackupWallet(wallet: wallet) else { return }
-        guard !isBackedUp(wallet: wallet) else { return }
-        guard !isImported(wallet: wallet) else { return }
         updateState { state in
             state.prompt[wallet.address] = nil
             state.backupState[wallet.address]?.timeToShowIntervalPassedPrompt = Date(timeIntervalSinceNow: PromptBackup.secondsInAMonth)
@@ -316,12 +314,6 @@ public class PromptBackup {
             block(&state)
             writeState(state)
         }
-    }
-}
-
-extension PromptBackup: NotificationSourceServiceDelegate {
-    public func showCreateBackup(in service: NotificationSourceService, etherReceived: BigInt, wallet: Wallet) {
-        showCreateBackupAfterReceiveNativeCryptoCurrencyPrompt(wallet: wallet, etherReceived: etherReceived)
     }
 }
 

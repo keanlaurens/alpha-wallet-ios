@@ -20,7 +20,9 @@ target 'AlphaWallet' do
   pod 'Mixpanel-swift', '~> 3.1'
   pod 'EthereumABI', :git => 'https://github.com/AlphaWallet/EthereumABI.git', :commit => '877b77e8e7cbc54ab0712d509b74fec21b79d1bb'
   pod 'Charts'
+  pod 'AlphaWalletABI', :path => '.'
   pod 'AlphaWalletAddress', :path => '.'
+  pod 'AlphaWalletAttestation', :path => '.'
   pod 'AlphaWalletCore', :path => '.'
   pod 'AlphaWalletGoBack', :path => '.'
   pod 'AlphaWalletENS', :path => '.'
@@ -32,6 +34,8 @@ target 'AlphaWallet' do
   pod 'AlphaWalletWeb3', :path => '.'
   pod 'AlphaWalletShareExtensionCore', :path => '.'
   pod 'AlphaWalletTrustWalletCoreExtensions', :path => '.'
+  pod 'AlphaWalletNotifications', :path => '.'
+  pod 'AlphaWalletTokenScript', :path => '.'
   pod 'MailchimpSDK'
   pod 'xcbeautify'
   pod 'FloatingPanel'
@@ -39,11 +43,10 @@ target 'AlphaWallet' do
 
   pod 'SwiftLint', '0.50.3', :configuration => 'Debug'
   pod 'SwiftFormat/CLI', '~> 0.49', :configuration => 'Debug'
-
-  pod 'FirebaseCrashlytics', '8.10.0'
+  pod 'Firebase/Crashlytics'
   pod 'WalletConnectSwift', :git => 'https://github.com/AlphaWallet/WalletConnectSwift.git', :branch => 'alphaWallet'
   pod 'Starscream', '3.1.1'
-  
+
   target 'AlphaWalletTests' do
       inherit! :search_paths
       # Pods for testing
@@ -66,7 +69,7 @@ post_install do |installer|
       config.build_settings['ONLY_ACTIVE_ARCH'] = 'YES'
       config.build_settings['ENABLE_BITCODE'] = 'NO'
     end
-    
+
     if ['MailchimpSDK'].include? target.name
       target.build_configurations.each do |config|
         config.build_settings['ENABLE_BITCODE'] = 'NO'
@@ -109,7 +112,7 @@ post_install do |installer|
       .each do |config|
         config.build_settings['SWIFT_OPTIMIZATION_LEVEL'] = '-Onone'
       end
-      
+
     target.build_configurations.each do |config|
       config.build_settings['EXPANDED_CODE_SIGN_IDENTITY'] = ""
       config.build_settings['CODE_SIGNING_REQUIRED'] = "NO"

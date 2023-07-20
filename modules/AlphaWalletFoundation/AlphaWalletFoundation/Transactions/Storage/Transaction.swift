@@ -25,7 +25,7 @@ class TransactionObject: Object {
     @objc dynamic var isERC20Interaction: Bool = false
     var localizedOperations = List<LocalizedOperationObject>()
 
-    convenience init(transaction: TransactionInstance) {
+    convenience init(transaction: Transaction) {
         self.init()
 
         self.primaryKey = transaction.primaryKey
@@ -66,15 +66,15 @@ class TransactionObject: Object {
     }
 }
 
-extension TransactionInstance {
+extension Transaction {
 
-    static func from(from: AlphaWallet.Address, transaction: SentTransaction, token: Token?) -> TransactionInstance {
+    static func from(from: AlphaWallet.Address, transaction: SentTransaction, token: Token?) -> Transaction {
         let (operations: operations, isErc20Interaction: isErc20Interaction) = decodeOperations(
             data: transaction.original.data,
             from: transaction.original.account,
             token: token)
 
-        return TransactionInstance(
+        return Transaction(
                 id: transaction.id,
                 server: transaction.original.server,
                 blockNumber: 0,
@@ -93,13 +93,13 @@ extension TransactionInstance {
     }
 
     //TODO add support for more types of pending transactions
-    fileprivate static func decodeOperations(data: Data, from: AlphaWallet.Address, token: Token?) -> (operations: [LocalizedOperationObjectInstance], isErc20Interaction: Bool) {
+    fileprivate static func decodeOperations(data: Data, from: AlphaWallet.Address, token: Token?) -> (operations: [LocalizedOperation], isErc20Interaction: Bool) {
         if let functionCallMetaData = DecodedFunctionCall(data: data), let token = token {
             switch functionCallMetaData.type {
             case .erc20Approve(let spender, let value):
-                return (operations: [LocalizedOperationObjectInstance(from: from.eip55String, to: spender.eip55String, contract: token.contractAddress, type: OperationType.erc20TokenApprove.rawValue, value: String(value), tokenId: "", symbol: token.symbol, name: token.name, decimals: token.decimals)], isErc20Interaction: true)
+                return (operations: [LocalizedOperation(from: from.eip55String, to: spender.eip55String, contract: token.contractAddress, type: OperationType.erc20TokenApprove.rawValue, value: String(value), tokenId: "", symbol: token.symbol, name: token.name, decimals: token.decimals)], isErc20Interaction: true)
             case .erc20Transfer(let recipient, let value):
-                return (operations: [LocalizedOperationObjectInstance(from: from.eip55String, to: recipient.eip55String, contract: token.contractAddress, type: OperationType.erc20TokenTransfer.rawValue, value: String(value), tokenId: "", symbol: token.symbol, name: token.name, decimals: token.decimals)], isErc20Interaction: true)
+                return (operations: [LocalizedOperation(from: from.eip55String, to: recipient.eip55String, contract: token.contractAddress, type: OperationType.erc20TokenTransfer.rawValue, value: String(value), tokenId: "", symbol: token.symbol, name: token.name, decimals: token.decimals)], isErc20Interaction: true)
             //TODO support ERC721 setApprovalForAll()
             case .erc721ApproveAll:
                 break
@@ -111,7 +111,7 @@ extension TransactionInstance {
     }
 }
 
-public struct TransactionInstance: Equatable, Hashable {
+public struct Transaction: Equatable, Hashable {
     public let primaryKey: String
     public let chainId: Int
     public let id: String
@@ -127,7 +127,7 @@ public struct TransactionInstance: Equatable, Hashable {
     public let date: Date
     public let internalState: Int
     public var isERC20Interaction: Bool
-    public var localizedOperations: [LocalizedOperationObjectInstance]
+    public var localizedOperations: [LocalizedOperation]
 
     public init(id: String,
                 server: RPCServer,
@@ -141,7 +141,7 @@ public struct TransactionInstance: Equatable, Hashable {
                 gasUsed: String,
                 nonce: String,
                 date: Date,
-                localizedOperations: [LocalizedOperationObjectInstance],
+                localizedOperations: [LocalizedOperation],
                 state: TransactionState,
                 isErc20Interaction: Bool) {
 
@@ -167,7 +167,7 @@ public struct TransactionInstance: Equatable, Hashable {
         return TransactionState(int: internalState)
     }
 
-    public var operation: LocalizedOperationObjectInstance? {
+    public var operation: LocalizedOperation? {
         return localizedOperations.first
     }
 
@@ -175,7 +175,7 @@ public struct TransactionInstance: Equatable, Hashable {
         return .init(chainID: chainId)
     }
 
-    public static func == (lhs: TransactionInstance, rhs: TransactionInstance) -> Bool {
+    public static func == (lhs: Transaction, rhs: Transaction) -> Bool {
         return lhs.primaryKey == rhs.primaryKey &&
             lhs.chainId == rhs.chainId &&
             lhs.id == rhs.id &&
@@ -196,7 +196,7 @@ public struct TransactionInstance: Equatable, Hashable {
 
 }
 
-extension TransactionInstance {
+extension Transaction {
     init(transaction: TransactionObject) {
         self.primaryKey = transaction.primaryKey
         self.id = transaction.id
@@ -213,7 +213,7 @@ extension TransactionInstance {
         self.date = transaction.date
         self.internalState = transaction.state.rawValue
         self.isERC20Interaction = transaction.isERC20Interaction
-        //NOTE: removes existing duplications of localized operations, need as `LocalizedOperationObjectInstance` don't have a primaryKey
-        self.localizedOperations = transaction.localizedOperations.map { LocalizedOperationObjectInstance(object: $0) }.uniqued()
+        //NOTE: removes existing duplications of localized operations, need as `LocalizedOperation` don't have a primaryKey
+        self.localizedOperations = transaction.localizedOperations.map { LocalizedOperation(object: $0) }.uniqued()
     }
 }

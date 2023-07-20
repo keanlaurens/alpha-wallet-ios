@@ -7,21 +7,20 @@
 
 import Foundation
 import Combine
+import AlphaWalletCore
 import AlphaWalletLogger
 import AlphaWalletWeb3
-import BigInt
-import AlphaWalletCore
 import APIKit
+import BigInt
 import JSONRPCKit
 
-public protocol BlockchainProvider {
+public protocol BlockchainProvider: BlockchainCallable {
     var server: RPCServer { get }
 
     func balance(for address: AlphaWallet.Address) -> AnyPublisher<Balance, SessionTaskError>
     func blockNumber() -> AnyPublisher<Int, SessionTaskError>
     func transactionReceipt(hash: String) -> AnyPublisher<TransactionReceipt, SessionTaskError>
     func call(from: AlphaWallet.Address?, to: AlphaWallet.Address?, value: String?, data: String) -> AnyPublisher<String, SessionTaskError>
-    func call<R: ContractMethodCall>(_ method: R, block: BlockParameter) -> AnyPublisher<R.Response, SessionTaskError>
     func transaction(byHash hash: String) -> AnyPublisher<EthereumTransaction?, SessionTaskError>
     func nextNonce(wallet: AlphaWallet.Address) -> AnyPublisher<Int, SessionTaskError>
     func block(by blockNumber: BigUInt) -> AnyPublisher<Block, SessionTaskError>
@@ -31,12 +30,6 @@ public protocol BlockchainProvider {
     func send(rawTransaction: String) -> AnyPublisher<String, SessionTaskError>
     func getChainId() -> AnyPublisher<Int, SessionTaskError>
     func feeHistory(blockCount: Int, block: BlockParameter, rewardPercentile: [Int]) -> AnyPublisher<FeeHistory, SessionTaskError>
-}
-
-extension BlockchainProvider {
-    func call<R: ContractMethodCall>(_ method: R, block: BlockParameter = .latest) -> AnyPublisher<R.Response, SessionTaskError> {
-        call(method, block: block)
-    }
 }
 
 public final class RpcBlockchainProvider: BlockchainProvider {
@@ -64,7 +57,7 @@ public final class RpcBlockchainProvider: BlockchainProvider {
         let payload = SendRawTransactionRequest(signedTransaction: rawTransaction.add0x)
         let (rpcURL, rpcHeaders) = rpcURLAndHeaders
         let request = EtherServiceRequest(rpcURL: rpcURL, rpcHeaders: rpcHeaders, batch: BatchFactory().create(payload))
-        
+
         return APIKitSession.sendPublisher(request, server: server, analytics: analytics)
     }
 
@@ -146,13 +139,16 @@ public final class RpcBlockchainProvider: BlockchainProvider {
             .handleEvents(receiveOutput: { [server] estimate in
                 infoLog("[RPC] Estimated gas price with RPC node server: \(server) estimate: \(estimate)")
             }).map { [params] gasPrice in
-                if (gasPrice + GasPriceConfiguration.oneGwei) > params.maxPrice {
+                //Add an extra gwei because the estimate is sometimes too low. We mustn't do this if the gas price estimated is lower than 1gwei since chains like Arbitrum is cheap (0.1gwei as of 20230320)
+                let bufferedGasPrice = params.gasPriceBuffer.bufferedGasPrice(estimatedGasPrice: gasPrice)
+
+                if bufferedGasPrice.value > params.maxPrice {
                     // Guard against really high prices
                     return LegacyGasEstimates(standard: params.maxPrice)
                 } else {
-                    if params.canUserChangeGas && params.shouldAddBufferWhenEstimatingGasPrice, gasPrice > GasPriceConfiguration.oneGwei {
-                        //Add an extra gwei because the estimate is sometimes too low. We mustn't do this if the gas price estimated is lower than 1gwei since chains like Arbitrum is cheap (0.1gwei as of 20230320)
-                        return LegacyGasEstimates(standard: gasPrice + GasPriceConfiguration.oneGwei)
+                    //We also check to make sure the buffer is not significant compared to the original gas price
+                    if params.canUserChangeGas && params.shouldAddBufferWhenEstimatingGasPrice, gasPrice > bufferedGasPrice.buffer {
+                        return LegacyGasEstimates(standard: bufferedGasPrice.value)
                     } else {
                         return LegacyGasEstimates(standard: gasPrice)
                     }
@@ -192,7 +188,7 @@ public typealias SessionTaskError = APIKit.SessionTaskError
 public typealias JSONRPCError = JSONRPCKit.JSONRPCError
 
 extension SessionTaskError {
-    init(error: Error) {
+    public init(error: Error) {
         if let e = error as? SessionTaskError {
             self = e
         } else {
@@ -232,5 +228,22 @@ extension JSONRPCKit.JSONRPCError: LocalizedError {
         case .nonArrayResponse:
             return "Non Array Response"
         }
+    }
+}
+
+public enum GasPriceBuffer {
+    case percentage(BigUInt)
+    case fixed(BigUInt)
+
+    public func bufferedGasPrice(estimatedGasPrice: BigUInt) -> (value: BigUInt, buffer: BigUInt) {
+        let buffer: BigUInt
+        switch self {
+        case .percentage(let bufferPercent):
+            buffer = estimatedGasPrice * bufferPercent / BigUInt(100)
+        case .fixed(let value):
+            buffer = value
+        }
+
+        return (estimatedGasPrice + buffer, buffer)
     }
 }

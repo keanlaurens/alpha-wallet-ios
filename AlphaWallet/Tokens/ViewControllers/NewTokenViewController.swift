@@ -2,6 +2,7 @@
 
 import Foundation
 import UIKit
+import struct AlphaWalletCore.CryptoAddressValidator
 import AlphaWalletFoundation
 
 protocol NewTokenViewControllerDelegate: AnyObject {
@@ -54,7 +55,7 @@ class NewTokenViewController: UIViewController {
         }
     }
     private lazy var addressTextField: AddressTextField = {
-        let textField = AddressTextField(domainResolutionService: domainResolutionService)
+        let textField = AddressTextField(server: RPCServer.forResolvingDomainNames, domainResolutionService: domainResolutionService)
         textField.returnKeyType = .next
         textField.inputAccessoryButtonType = .next
         textField.delegate = self
@@ -103,7 +104,7 @@ class NewTokenViewController: UIViewController {
         return button
     }()
     private var shouldFireDetectionWhenAppear: Bool
-    private let domainResolutionService: DomainResolutionServiceType
+    private let domainResolutionService: DomainNameResolutionServiceType
     private lazy var balanceTextFieldLayout = balanceTextField.defaultLayout()
     private lazy var decimalsTextFieldLayout: UIView = {
         let view = decimalsTextField.defaultLayout()
@@ -124,7 +125,7 @@ class NewTokenViewController: UIViewController {
         return containerView
     }()
 
-    init(server: RPCServerOrAuto, domainResolutionService: DomainResolutionServiceType, initialState: NewTokenInitialState) {
+    init(server: RPCServerOrAuto, domainResolutionService: DomainNameResolutionServiceType, initialState: NewTokenInitialState) {
         self.server = server
         self.domainResolutionService = domainResolutionService
         switch initialState {

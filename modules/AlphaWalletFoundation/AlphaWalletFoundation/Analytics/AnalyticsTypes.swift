@@ -76,6 +76,8 @@ public enum Analytics {
         case walletConnectSwitchNetwork = "WalletConnect Switch Network"
         case walletConnectConnectionTimeout = "WalletConnect Connection Timeout"
         case walletConnectConnectionFailed = "WalletConnect Connection Failed"
+        case walletConnectAuthAccept = "WalletConnect Auth Accept"
+        case walletConnectAuthCancel = "WalletConnect Auth Cancel"
         case clearBrowserCache = "Clear Browser Cache"
         case pingInfura = "Ping Infura"
         case rectifySendTransactionErrorInActionSheet = "Rectify Send Txn Error"
@@ -114,6 +116,8 @@ public enum Analytics {
         case lifiFetchSupportedToolsError
         case lifiFetchSupportedChainsError
         case coinGeckoRateLimited
+        case blockchainExplorerRateLimited
+        case blockchainExplorerError
     }
 
     public enum Properties: String {
@@ -138,6 +142,7 @@ public enum Analytics {
         case reason
         case domainName
         case scheme
+        case code
     }
 
     public enum EmbeddedDeepLinkType: String {
@@ -172,6 +177,7 @@ public enum Analytics {
 
     public enum ScanQRCodeResultType: String {
         case addressOrEip681
+        case attestation
         case walletConnect
         case string
         case url

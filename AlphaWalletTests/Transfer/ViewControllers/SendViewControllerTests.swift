@@ -175,7 +175,7 @@ class SendViewControllerTests: XCTestCase {
         vc.didScanQRCode(qrCode)
 
         let expectation = self.expectation(description: "did update token balance expectation")
-        let destination = AlphaWallet.Address(string: "0xbc8dafeaca658ae0857c80d8aa6de4d487577c63").flatMap { AddressOrEnsName(address: $0) }
+        let destination = AlphaWallet.Address(string: "0xbc8dafeaca658ae0857c80d8aa6de4d487577c63").flatMap { AddressOrDomainName(address: $0) }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
             XCTAssertEqual(vc.viewModel.latestQrCode, qrCode)
@@ -241,7 +241,7 @@ class SendViewControllerTests: XCTestCase {
 
         let tokenAreGoingToBeResolved = Token(contract: AlphaWallet.Address(string: "0xC18360217D8F7Ab5e7c516566761Ea12Ce7F9D72")!, name: "erc20", symbol: "erc20", decimals: 18, type: .erc20)
         dep.tokensService.addOrUpdateTokenTestsOnly(token: tokenAreGoingToBeResolved)
-        
+
         vc.didScanQRCode("aw.app/ethereum:0xC18360217D8F7Ab5e7c516566761Ea12Ce7F9D72@1/transfer?address=0x8e23ee67d1332ad560396262c48ffbb01f93d052&uint256=1.004e18")
 
         let expectation = self.expectation(description: "did update token balance expectation")
@@ -263,7 +263,14 @@ class SendViewControllerTests: XCTestCase {
 
 class TokenBalanceTests: XCTestCase {
     private var cancelable = Set<AnyCancellable>()
-    let dep = WalletDataProcessingPipeline.make(wallet: .make(), server: .main)
+    private let coinTickersFetcher = CoinTickers.make()
+    private let currencyService: CurrencyService = .make()
+
+    lazy var dep = WalletDataProcessingPipeline.make(
+        wallet: .make(),
+        server: .main,
+        coinTickersFetcher: coinTickersFetcher,
+        currencyService: currencyService)
 
     func testTokenViewModelChanges() {
         let pipeline = dep.pipeline
@@ -286,18 +293,18 @@ class TokenBalanceTests: XCTestCase {
                     tokenBalanceUpdateCallbackExpectation.fulfill()
                 }
             }.store(in: &cancelable)
-        
+
         tokensService.setBalanceTestsOnly(balance: .init(value: BigUInt("3000000020224719101120")!), for: token)
 
         let tokenToTicker = TokenMappedToTicker(token: token)
-        let ticker = CoinTicker.make(for: tokenToTicker, currency: dep.currencyService.currency)
+        let ticker = CoinTicker.make(for: tokenToTicker, currency: currencyService.currency)
 
-        dep.coinTickersFetcher.addOrUpdateTestsOnly(ticker: ticker, for: tokenToTicker)
-        dep.coinTickersFetcher.addOrUpdateTestsOnly(ticker: ticker.override(price_usd: 0), for: tokenToTicker) // no changes should be, as value is stay the same
-        dep.coinTickersFetcher.addOrUpdateTestsOnly(ticker: ticker.override(price_usd: 666), for: tokenToTicker)
+        coinTickersFetcher.addOrUpdateTestsOnly(ticker: ticker, for: tokenToTicker)
+        coinTickersFetcher.addOrUpdateTestsOnly(ticker: ticker.override(price_usd: 0), for: tokenToTicker) // no changes should be, as value is stay the same
+        coinTickersFetcher.addOrUpdateTestsOnly(ticker: ticker.override(price_usd: 666), for: tokenToTicker)
 
         tokensService.setBalanceTestsOnly(balance: .init(value: BigUInt("4000000020224719101120")!), for: token)
-        
+
         waitForExpectations(timeout: 50)
     }
 
@@ -378,8 +385,8 @@ class TokenBalanceTests: XCTestCase {
             }.store(in: &cancelable)
 
         let tokenToTicker = TokenMappedToTicker(token: token)
-        let ticker = CoinTicker.make(for: tokenToTicker, currency: dep.currencyService.currency)
-        dep.coinTickersFetcher.addOrUpdateTestsOnly(ticker: ticker, for: tokenToTicker)
+        let ticker = CoinTicker.make(for: tokenToTicker, currency: currencyService.currency)
+        coinTickersFetcher.addOrUpdateTestsOnly(ticker: ticker, for: tokenToTicker)
 
         let group = DispatchGroup()
         for each in 0 ..< 10 {
@@ -392,7 +399,7 @@ class TokenBalanceTests: XCTestCase {
                 }
             } else {
                 DispatchQueue.global().asyncAfter(deadline: .now() + .seconds(each)) {
-                    self.dep.coinTickersFetcher.addOrUpdateTestsOnly(ticker: ticker.override(price_usd: ticker.price_usd + Double(each)), for: tokenToTicker)
+                    self.coinTickersFetcher.addOrUpdateTestsOnly(ticker: ticker.override(price_usd: ticker.price_usd + Double(each)), for: tokenToTicker)
                     group.leave()
                 }
             }

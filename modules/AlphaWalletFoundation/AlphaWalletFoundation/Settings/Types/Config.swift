@@ -54,8 +54,8 @@ public struct Config {
         setLocale(locale.id)
 
         EtherNumberFormatter.full = .createFullEtherNumberFormatter()
-        EtherNumberFormatter.short = .createShortEtherNumberFormatter()
-        EtherNumberFormatter.shortPlain = .createShortPlainEtherNumberFormatter()
+        EtherNumberFormatter.short = .createShortEtherNumberFormatter(maximumFractionDigits: Constants.etherFormatterFractionDigits)
+        EtherNumberFormatter.shortPlain = .createShortPlainEtherNumberFormatter(maximumFractionDigits: Constants.etherFormatterFractionDigits)
         EtherNumberFormatter.plain = .createPlainEtherNumberFormatter()
     }
 
@@ -93,6 +93,10 @@ public struct Config {
         "\(Keys.lastFetchedAutoDetectedTransactedTokenErc721BlockNumber)-\(wallet.eip55String)"
     }
 
+    private static func generateLastFetchedErc1155InteractionBlockNumberKey(_ wallet: AlphaWallet.Address) -> String {
+        "\(Keys.lastFetchedAutoDetectedTransactedTokenErc1155BlockNumber)-\(wallet.eip55String)"
+    }
+
     private static func generateLastFetchedAutoDetectedTransactedTokenErc20BlockNumberKey(_ wallet: AlphaWallet.Address) -> String {
         "\(Keys.lastFetchedAutoDetectedTransactedTokenErc20BlockNumber)-\(wallet.eip55String)"
     }
@@ -118,8 +122,19 @@ public struct Config {
         defaults.set(dictionary, forKey: generateLastFetchedErc721InteractionBlockNumberKey(wallet))
     }
 
+    public static func setLastFetchedErc1155InteractionBlockNumber(_ blockNumber: Int, server: RPCServer, wallet: AlphaWallet.Address, defaults: UserDefaults = UserDefaults.standardOrForTests) {
+        var dictionary: [String: NSNumber] = (defaults.value(forKey: generateLastFetchedErc1155InteractionBlockNumberKey(wallet)) as? [String: NSNumber]) ?? .init()
+        dictionary["\(server.chainID)"] = NSNumber(value: blockNumber)
+        defaults.set(dictionary, forKey: generateLastFetchedErc1155InteractionBlockNumberKey(wallet))
+    }
+
     public static func getLastFetchedErc721InteractionBlockNumber(_ server: RPCServer, wallet: AlphaWallet.Address, defaults: UserDefaults = UserDefaults.standardOrForTests) -> Int? {
         guard let dictionary = defaults.value(forKey: generateLastFetchedErc721InteractionBlockNumberKey(wallet)) as? [String: NSNumber] else { return nil }
+        return dictionary["\(server.chainID)"]?.intValue
+    }
+
+    public static func getLastFetchedErc1155InteractionBlockNumber(_ server: RPCServer, wallet: AlphaWallet.Address, defaults: UserDefaults = UserDefaults.standardOrForTests) -> Int? {
+        guard let dictionary = defaults.value(forKey: generateLastFetchedErc1155InteractionBlockNumberKey(wallet)) as? [String: NSNumber] else { return nil }
         return dictionary["\(server.chainID)"]?.intValue
     }
 
@@ -157,12 +172,12 @@ public struct Config {
         static let lastFetchedErc20InteractionBlockNumber = "lastFetchedErc20InteractionBlockNumber"
         static let lastFetchedAutoDetectedTransactedTokenErc20BlockNumber = "lastFetchedAutoDetectedTransactedTokenErc20BlockNumber"
         static let lastFetchedAutoDetectedTransactedTokenErc721BlockNumber = "lastFetchedAutoDetectedTransactedTokenErc721BlockNumber"
+        static let lastFetchedAutoDetectedTransactedTokenErc1155BlockNumber = "lastFetchedAutoDetectedTransactedTokenErc1155BlockNumber"
         static let lastFetchedAutoDetectedTransactedTokenNonErc20BlockNumber = "lastFetchedAutoDetectedTransactedTokenNonErc20BlockNumber"
         static let walletNames = "walletNames"
         //We don't write to this key anymore as we support more than 1 service provider. Reading this key only for legacy reasons
         static let usePrivateNetwork = "usePrivateNetworkKey"
         static let privateNetworkProvider = "privateNetworkProvider"
-        static let customRpcServers = "customRpcServers"
         static let homePageURL = "homePageURL"
         static let sendAnalyticsEnabled = "sendAnalyticsEnabled"
         static let sendCrashReportingEnabled = "sendCrashReportingEnabled"
@@ -175,7 +190,7 @@ public struct Config {
 
     public var sendAnalyticsEnabled: Bool? {
         get {
-            guard Features.default.isAvailable(.isAnalyticsUIEnabled) else { return nil }
+            guard Features.current.isAvailable(.isAnalyticsUIEnabled) else { return nil }
             guard let value = defaults.value(forKey: Keys.sendAnalyticsEnabled) as? Bool else {
                 return nil
             }
@@ -183,7 +198,7 @@ public struct Config {
             return value
         }
         set {
-            guard Features.default.isAvailable(.isAnalyticsUIEnabled) else {
+            guard Features.current.isAvailable(.isAnalyticsUIEnabled) else {
                 defaults.removeObject(forKey: Keys.sendAnalyticsEnabled)
                 return
             }
@@ -211,7 +226,7 @@ public struct Config {
 
     public var sendPrivateTransactionsProvider: SendPrivateTransactionsProvider? {
         get {
-            guard Features.default.isAvailable(.isUsingPrivateNetwork) else { return nil }
+            guard Features.current.isAvailable(.isUsingPrivateNetwork) else { return nil }
             if defaults.bool(forKey: Keys.usePrivateNetwork) {
                 //Default, for legacy reasons
                 return .ethermine
@@ -221,7 +236,7 @@ public struct Config {
             }
         }
         set {
-            guard Features.default.isAvailable(.isUsingPrivateNetwork) else { return }
+            guard Features.current.isAvailable(.isUsingPrivateNetwork) else { return }
             defaults.set(newValue?.rawValue, forKey: Keys.privateNetworkProvider)
         }
     }
@@ -246,15 +261,6 @@ public struct Config {
             defaults.set(chainIds, forKey: Keys.enabledServers)
 
             Self.enabledServersSubject.send(newValue)
-        }
-    }
-
-    public var customRpcServersJson: String? {
-        get {
-            return defaults.string(forKey: Keys.customRpcServers)
-        }
-        set {
-            defaults.set(newValue, forKey: Keys.customRpcServers)
         }
     }
 
@@ -326,44 +332,5 @@ extension Config {
 
     func removeAllWalletNames() {
         defaults.removeObject(forKey: Keys.walletNames)
-    }
-}
-
-extension Config {
-
-    private static func notificationKey(for transaction: TransactionInstance) -> String {
-        String(format: "%@-%d", transaction.id, transaction.chainId)
-    }
-
-    private static func notificationsStorageKey(wallet: Wallet) -> String {
-        return "presentedNotifications-\(wallet.address.eip55String)"
-    }
-
-    func hasScheduledNotification(for transaction: TransactionInstance, in wallet: Wallet) -> Bool {
-        let key = Config.notificationKey(for: transaction)
-        return notifications(wallet: wallet).contains(key)
-    }
-
-    private func notifications(wallet: Wallet) -> [String] {
-        let storageKey = Config.notificationsStorageKey(wallet: wallet)
-        if let values = defaults.array(forKey: storageKey) {
-            return values as! [String]
-        } else {
-            return []
-        }
-    }
-
-    func markScheduledNotification(transaction: TransactionInstance, in wallet: Wallet) {
-        let key = Config.notificationKey(for: transaction)
-        let notifications = notifications(wallet: wallet)
-        let updatedNotifications = Array(Set(notifications + [key]))
-
-        let storageKey = Config.notificationsStorageKey(wallet: wallet)
-        defaults.set(updatedNotifications, forKey: storageKey)
-    }
-
-    func removeAllNotifications(for wallet: Wallet) {
-        let storageKey = Config.notificationsStorageKey(wallet: wallet)
-        defaults.removeObject(forKey: storageKey)
     }
 }

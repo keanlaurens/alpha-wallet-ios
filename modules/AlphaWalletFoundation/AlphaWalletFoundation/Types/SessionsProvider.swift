@@ -7,6 +7,9 @@
 
 import Foundation
 import Combine
+import AlphaWalletCore
+import AlphaWalletTokenScript
+import protocol AlphaWalletWeb3.BlockchainCallable
 
 public protocol SessionsProvider: AnyObject {
     var sessions: AnyPublisher<ServerDictionary<WalletSession>, Never> { get }
@@ -60,7 +63,10 @@ open class BaseSessionsProvider: SessionsProvider {
     public func start() {
         blockchainsProvider
             .blockchains
-            .map { [weak self, sessionsSubject] blockchains -> ServerDictionary<WalletSession> in
+            .map { [weak self, sessionsSubject] (blockchains: ServerDictionary<BlockchainCallable>) -> ServerDictionary<WalletSession> in
+                //TODO unfortunate casting needed due to how/when we extract AlphaWalletTokenScript
+                let blockchains = blockchains.mapValues { $0 as! BlockchainProvider }
+
                 guard let strongSelf = self else { return .init() }
                 var sessions: ServerDictionary<WalletSession> = .init()
 
@@ -72,12 +78,20 @@ open class BaseSessionsProvider: SessionsProvider {
                     }
                 }
 
-                let sessionsToDelete = sessionsSubject.value.filter { session in !sessions.contains(where: { $0.key == session.key }) }
-                sessionsToDelete.forEach { $0.value.stop() }
-
                 return sessions
             }.assign(to: \.value, on: sessionsSubject, ownership: .weak)
             .store(in: &cancelable)
+
+        NotificationCenter.default.applicationState
+            .receive(on: RunLoop.main)
+            .sink { [sessionsSubject] state in
+                switch state {
+                case .didEnterBackground:
+                    sessionsSubject.value.forEach { $0.value.blockNumberProvider.cancel() }
+                case .willEnterForeground:
+                    sessionsSubject.value.forEach { $0.value.blockNumberProvider.restart() }
+                }
+            }.store(in: &cancelable)
     }
 
     private func buildSession(blockchain: BlockchainProvider) -> WalletSession {
@@ -111,7 +125,7 @@ open class BaseSessionsProvider: SessionsProvider {
             wallet: wallet,
             nftProvider: nftProvider)
 
-        let apiNetworking = buildApiNetworking(server: blockchain.server, wallet: wallet, ercTokenProvider: ercTokenProvider)
+        let blockchainExplorer = buildBlockchainExplorer(server: blockchain.server, wallet: wallet, ercTokenProvider: ercTokenProvider)
 
         return WalletSession(
             account: wallet,
@@ -123,47 +137,30 @@ open class BaseSessionsProvider: SessionsProvider {
             blockchainProvider: blockchain,
             nftProvider: nftProvider,
             tokenAdaptor: tokenAdaptor,
-            apiNetworking: apiNetworking)
+            blockchainExplorer: blockchainExplorer)
     }
 
     public func session(for server: RPCServer) -> WalletSession? {
         sessionsSubject.value[safe: server]
     }
 
-    private func buildApiNetworking(server: RPCServer, wallet: Wallet, ercTokenProvider: TokenProviderType) -> ApiNetworking {
+    private func buildBlockchainExplorer(server: RPCServer, wallet: Wallet, ercTokenProvider: TokenProviderType) -> BlockchainExplorer {
         let transporter = apiTransporterFactory.transporter(server: server)
 
         switch server.transactionsSource {
-        case .etherscan:
-            let transactionBuilder = TransactionBuilder(
-                tokensDataStore: tokensDataStore,
-                server: server,
-                ercTokenProvider: ercTokenProvider)
-            
-            return EtherscanCompatibleApiNetworking(
-                server: server,
-                wallet: wallet,
-                transporter: transporter,
-                transactionBuilder: transactionBuilder)
-
+        case .etherscan(let apiKey, let url):
+            let transactionBuilder = TransactionBuilder(tokensDataStore: tokensDataStore, server: server, ercTokenProvider: ercTokenProvider)
+            return EtherscanCompatibleBlockchainExplorer(server: server, transporter: transporter, transactionBuilder: transactionBuilder, baseUrl: url, apiKey: apiKey, analytics: analytics)
+        case .blockscout(let apiKey, let url):
+            let transactionBuilder = TransactionBuilder(tokensDataStore: tokensDataStore, server: server, ercTokenProvider: ercTokenProvider)
+            return BlockscoutBlockchainExplorer(server: server, transporter: transporter, transactionBuilder: transactionBuilder, apiKey: apiKey, baseUrl: url, analytics: analytics)
         case .covalent(let apiKey):
-            return CovalentApiNetworking(
-                server: server,
-                apiKey: apiKey,
-                transporter: transporter)
-
+            return CovalentBlockchainExplorer(server: server, apiKey: apiKey, transporter: transporter, analytics: analytics)
         case .oklink(let apiKey):
-            let transactionBuilder = TransactionBuilder(
-                tokensDataStore: tokensDataStore,
-                server: server,
-                ercTokenProvider: ercTokenProvider)
-
-            return OklinkApiNetworking(
-                server: server,
-                apiKey: apiKey,
-                transporter: transporter,
-                ercTokenProvider: ercTokenProvider,
-                transactionBuilder: transactionBuilder)
+            let transactionBuilder = TransactionBuilder(tokensDataStore: tokensDataStore, server: server, ercTokenProvider: ercTokenProvider)
+            return OklinkBlockchainExplorer(server: server, apiKey: apiKey, transporter: transporter, ercTokenProvider: ercTokenProvider, transactionBuilder: transactionBuilder, analytics: analytics)
+        case .unknown:
+            return FallbackBlockchainExplorer()
         }
     }
 }
@@ -179,7 +176,18 @@ public class ApiTransporterFactory {
         if let transporter = transportes[server] {
             return transporter
         } else {
-            let transporter = BaseApiTransporter()
+            let policy: RetryPolicy
+
+            switch server {
+            case .goerli, .mumbai_testnet, .sepolia:
+                //NOTE: goerli as well as mumbai_testnet and sepolia retrun 403 error code
+                policy = ApiTransporterRetryPolicy(retryableHTTPStatusCodes: [429, 408, 500, 502, 503, 504, 403])
+            case .xDai, .classic, .main, .callisto, .binance_smart_chain, .heco, .fantom, .avalanche, .polygon, .optimistic, .arbitrum, .palm, .klaytnCypress, .ioTeX, .cronosMainnet, .okx, .binance_smart_chain_testnet, .heco_testnet, .fantom_testnet, .avalanche_testnet, .cronosTestnet, .palmTestnet, .klaytnBaobabTestnet, .ioTeXTestnet, .optimismGoerli, .arbitrumGoerli, .custom:
+                policy = ApiTransporterRetryPolicy()
+            }
+
+            let transporter = BaseApiTransporter(policy: policy)
+
             transportes[server] = transporter
             return transporter
         }

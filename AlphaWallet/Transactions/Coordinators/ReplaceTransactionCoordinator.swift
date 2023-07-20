@@ -17,13 +17,13 @@ class ReplaceTransactionCoordinator: Coordinator {
 
     private let tokensService: TokensProcessingPipeline
     private let analytics: AnalyticsLogger
-    private let domainResolutionService: DomainResolutionServiceType
+    private let domainResolutionService: DomainNameResolutionServiceType
     private let pendingTransactionInformation: (server: RPCServer, data: Data, transactionType: TransactionType, gasPrice: GasPrice)
     private let nonce: BigUInt
     private let keystore: Keystore
     private let presentingViewController: UIViewController
     private let session: WalletSession
-    private let transaction: TransactionInstance
+    private let transaction: Transaction
     private let mode: Mode
     private var transactionConfirmationResult: ConfirmResult? = .none
     private let networkService: NetworkService
@@ -81,15 +81,15 @@ class ReplaceTransactionCoordinator: Coordinator {
     weak var delegate: ReplaceTransactionCoordinatorDelegate?
 
     init?(analytics: AnalyticsLogger,
-          domainResolutionService: DomainResolutionServiceType,
+          domainResolutionService: DomainNameResolutionServiceType,
           keystore: Keystore,
           presentingViewController: UIViewController,
           session: WalletSession,
-          transaction: TransactionInstance,
+          transaction: Transaction,
           mode: Mode,
           tokensService: TokensProcessingPipeline,
           networkService: NetworkService) {
-        
+
         guard let pendingTransactionInformation = TransactionDataStore.pendingTransactionsInformation[transaction.id] else { return nil }
         guard let nonce = BigUInt(transaction.nonce) else { return nil }
         self.networkService = networkService
@@ -112,7 +112,7 @@ class ReplaceTransactionCoordinator: Coordinator {
             recipient: recipient,
             contract: contract,
             data: transactionData,
-            gasPrice: computeGasPriceForReplacementTransaction(pendingTransactionInformation.gasPrice),
+            gasPrice: pendingTransactionInformation.gasPrice.computeGasPriceForReplacementTransaction(),
             nonce: nonce)
 
         let coordinator = TransactionConfirmationCoordinator(
@@ -136,15 +136,6 @@ class ReplaceTransactionCoordinator: Coordinator {
             coordinator.start(fromSource: .cancelTransaction)
         }
     }
-
-    private func computeGasPriceForReplacementTransaction(_ gasPrice: GasPrice) -> GasPrice {
-        switch gasPrice {
-        case .legacy(let gasPrice):
-            return .legacy(gasPrice: gasPrice * 110 / 100)
-        case .eip1559(let maxFeePerGas, let maxPriorityFeePerGas):
-            return .eip1559(maxFeePerGas: maxFeePerGas * 110 / 100, maxPriorityFeePerGas: maxPriorityFeePerGas)
-        }
-    }
 }
 
 extension ReplaceTransactionCoordinator: TransactionConfirmationCoordinatorDelegate {
@@ -165,7 +156,10 @@ extension ReplaceTransactionCoordinator: TransactionConfirmationCoordinatorDeleg
             strongSelf.removeCoordinator(coordinator)
             strongSelf.transactionConfirmationResult = result
 
-            let coordinator = TransactionInProgressCoordinator(presentingViewController: strongSelf.presentingViewController)
+            let coordinator = TransactionInProgressCoordinator(
+                presentingViewController: strongSelf.presentingViewController,
+                server: strongSelf.session.server)
+
             coordinator.delegate = strongSelf
             strongSelf.addCoordinator(coordinator)
 
@@ -214,5 +208,22 @@ extension ReplaceTransactionCoordinator: CanOpenURL {
 
     func didPressOpenWebPage(_ url: URL, in viewController: UIViewController) {
         delegate?.didPressOpenWebPage(url, in: viewController)
+    }
+}
+
+extension GasPrice {
+    fileprivate func computeGasPriceForReplacementTransaction() -> GasPrice {
+        switch self {
+        case .legacy(let gasPrice):
+            let gasPrice = GasPriceBuffer.percentage(10).bufferedGasPrice(estimatedGasPrice: gasPrice).value
+
+            return .legacy(gasPrice: gasPrice)
+        case .eip1559(let maxFeePerGas, let maxPriorityFeePerGas):
+            //e.g https://support.metamask.io/hc/en-us/articles/360015489251-How-to-Speed-Up-or-Cancel-a-Pending-Transaction
+            let maxFeePerGas = GasPriceBuffer.percentage(10).bufferedGasPrice(estimatedGasPrice: maxFeePerGas).value
+            let maxPriorityFeePerGas = GasPriceBuffer.percentage(30).bufferedGasPrice(estimatedGasPrice: maxPriorityFeePerGas).value
+
+            return .eip1559(maxFeePerGas: maxFeePerGas, maxPriorityFeePerGas: maxPriorityFeePerGas)
+        }
     }
 }

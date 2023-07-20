@@ -4,6 +4,7 @@ import XCTest
 @testable import AlphaWallet
 import Combine
 import AlphaWalletFoundation
+import AlphaWalletWeb3
 
 extension TokensFilter {
     static func make() -> TokensFilter {
@@ -24,14 +25,17 @@ extension CurrencyService {
 }
 
 extension WalletDataProcessingPipeline {
-    static func make(wallet: Wallet = .make(), server: RPCServer = .main) -> AppCoordinator.WalletDependencies {
+    static func make(wallet: Wallet = .make(),
+                     server: RPCServer = .main,
+                     coinTickersFetcher: CoinTickersProvider & CoinTickersFetcher = CoinTickers.make(),
+                     currencyService: CurrencyService = .make()) -> WalletDependencies {
         let fas = FakeAnalyticsService()
 
         let tokensDataStore = FakeTokensDataStore(account: wallet, servers: [server])
         let sessionsProvider = FakeSessionsProvider(
             config: .make(),
             analytics: FakeAnalyticsService(),
-            blockchainsProvider: .make(servers: [server]),
+            blockchainsProvider: BlockchainsProviderImplementation .make(servers: [server]),
             tokensDataStore: tokensDataStore,
             assetDefinitionStore: .make(),
             reachability: FakeReachabilityManager(true),
@@ -44,8 +48,6 @@ extension WalletDataProcessingPipeline {
 
         let eventsDataStore = FakeEventsDataStore()
         let transactionsDataStore = FakeTransactionsStorage()
-        let coinTickersFetcher = CoinTickersFetcherImpl.make()
-        let currencyService: CurrencyService = .make()
 
         let tokensService = AlphaWalletTokensService(
             sessionsProvider: sessionsProvider,
@@ -59,6 +61,7 @@ extension WalletDataProcessingPipeline {
             wallet: wallet,
             tokensService: tokensService,
             coinTickersFetcher: coinTickersFetcher,
+            coinTickersProvider: coinTickersFetcher,
             assetDefinitionStore: .make(),
             eventsDataStore: eventsDataStore,
             currencyService: currencyService,
@@ -80,7 +83,16 @@ extension WalletDataProcessingPipeline {
             eventsActivityDataStore: eventsActivityDataStore,
             eventsDataStore: eventsDataStore)
 
-        let dep = AppCoordinator.WalletDependencies(
+        let transactionsService = TransactionsService(
+            sessionsProvider: sessionsProvider,
+            transactionDataStore: transactionsDataStore,
+            analytics: fas,
+            tokensService: tokensService,
+            networkService: FakeNetworkService(),
+            config: .make(),
+            assetDefinitionStore: .make())
+
+        let dep = WalletDependencies(
             activitiesPipeLine: activitiesPipeLine,
             transactionsDataStore: transactionsDataStore,
             tokensDataStore: tokensDataStore,
@@ -89,9 +101,8 @@ extension WalletDataProcessingPipeline {
             fetcher: fetcher,
             sessionsProvider: sessionsProvider,
             eventsDataStore: eventsDataStore,
-            currencyService: currencyService,
-            coinTickersFetcher: coinTickersFetcher)
-        
+            transactionsService: transactionsService)
+
         dep.sessionsProvider.start()
         dep.fetcher.start()
         dep.pipeline.start()

@@ -15,7 +15,7 @@ extension NumberFormatter {
         formatter.negativeFormat = "-,###.# " + currency.rawValue
         formatter.minimumFractionDigits = Constants.formatterFractionDigits
         formatter.maximumFractionDigits = Constants.formatterFractionDigits
-        
+
         return formatter
     }
 
@@ -36,11 +36,11 @@ extension NumberFormatter {
         formatter.minimumFractionDigits = Constants.formatterFractionDigits
         formatter.maximumFractionDigits = Constants.formatterFractionDigits
         formatter.numberStyle = .percent
-        
+
         return formatter
     }
 
-    //NOTE: does't work when its stored static let, should be computed var
+    //NOTE: doesn't work when its stored static let, should be computed var
     public static var shortCrypto: NumberFormatter {
         let formatter = basicCurrencyFormatter()
         formatter.positiveFormat = ",###.#"
@@ -134,7 +134,7 @@ extension NumberFormatter {
 
     public func string(double: Double, minimumFractionDigits: Int, maximumFractionDigits: Int) -> String {
         let fractionDigits: Int
-        
+
         let int = double.rounded(to: 0)
         let minimumFractionNumber = Double("0." + String(1).leftPadding(to: minimumFractionDigits, pad: "0"))!
         let maximumFractionNumber = Double("0." + String(1).leftPadding(to: maximumFractionDigits, pad: "0"))!
@@ -160,9 +160,9 @@ extension NumberFormatter {
 fileprivate extension String {
     func leftPadding(to: Int, pad: String = " ") -> String {
 
-        guard to > self.characters.count else { return self }
+        guard to > self.count else { return self }
 
-        let padding = String(repeating: pad, count: to - self.characters.count)
+        let padding = String(repeating: pad, count: to - self.count)
         return padding + self
     }
 }

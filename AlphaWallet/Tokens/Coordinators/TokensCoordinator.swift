@@ -1,7 +1,9 @@
 // Copyright © 2018 Stormbird PTE. LTD.
 
 import UIKit
+import AlphaWalletAttestation
 import AlphaWalletAddress
+import AlphaWalletLogger
 import Combine
 import AlphaWalletFoundation
 
@@ -10,7 +12,7 @@ protocol TokensCoordinatorDelegate: CanOpenURL, SendTransactionDelegate, BuyCryp
     func didTapBridge(token: Token, service: TokenActionProvider, in coordinator: TokensCoordinator)
     func didTapBuy(token: Token, service: TokenActionProvider, in coordinator: TokensCoordinator)
     func didTap(suggestedPaymentFlow: SuggestedPaymentFlow, viewController: UIViewController?, in coordinator: TokensCoordinator)
-    func didTap(transaction: TransactionInstance, viewController: UIViewController, in coordinator: TokensCoordinator)
+    func didTap(transaction: Transaction, viewController: UIViewController, in coordinator: TokensCoordinator)
     func didTap(activity: Activity, viewController: UIViewController, in coordinator: TokensCoordinator)
     func openConsole(inCoordinator coordinator: TokensCoordinator)
     func didPostTokenScriptTransaction(_ transaction: SentTransaction, in coordinator: TokensCoordinator)
@@ -47,7 +49,8 @@ class TokensCoordinator: Coordinator {
             assetDefinitionStore: assetDefinitionStore,
             tokenImageFetcher: tokenImageFetcher,
             serversProvider: serversProvider,
-            tokensService: tokensService)
+            tokensService: tokensService,
+            attestationsStore: attestationsStore)
 
         let controller = TokensViewController(viewModel: viewModel)
 
@@ -60,7 +63,7 @@ class TokensCoordinator: Coordinator {
         return coordinators.compactMap { $0 as? SingleChainTokenCoordinator }
     }
     private let walletConnectCoordinator: WalletConnectCoordinator
-    private let coinTickersFetcher: CoinTickersFetcher
+    private let coinTickersProvider: CoinTickersProvider
 
     private let walletBalanceService: WalletBalanceService
     private lazy var alertService: PriceAlertServiceType = {
@@ -69,12 +72,13 @@ class TokensCoordinator: Coordinator {
 
     private var viewWillAppearHandled = false
     private let blockiesGenerator: BlockiesGenerator
-    private let domainResolutionService: DomainResolutionServiceType
+    private let domainResolutionService: DomainNameResolutionServiceType
     private let wallet: Wallet
     private let currencyService: CurrencyService
     private var cancellable = Set<AnyCancellable>()
     private let serversProvider: ServersProvidable
     private let tokensService: TokensService
+    private lazy var attestationsStore: AttestationsStore = AttestationsStore(wallet: wallet.address)
 
     let navigationController: UINavigationController
     var coordinators: [Coordinator] = []
@@ -92,13 +96,13 @@ class TokensCoordinator: Coordinator {
          analytics: AnalyticsLogger,
          tokenActionsService: TokenActionsService,
          walletConnectCoordinator: WalletConnectCoordinator,
-         coinTickersFetcher: CoinTickersFetcher,
+         coinTickersProvider: CoinTickersProvider,
          activitiesService: ActivitiesServiceType,
          walletBalanceService: WalletBalanceService,
          tokenCollection: TokensProcessingPipeline,
          tokensService: TokensService,
          blockiesGenerator: BlockiesGenerator,
-         domainResolutionService: DomainResolutionServiceType,
+         domainResolutionService: DomainNameResolutionServiceType,
          tokensFilter: TokensFilter,
          currencyService: CurrencyService,
          tokenImageFetcher: TokenImageFetcher,
@@ -120,7 +124,7 @@ class TokensCoordinator: Coordinator {
         self.analytics = analytics
         self.tokenActionsService = tokenActionsService
         self.walletConnectCoordinator = walletConnectCoordinator
-        self.coinTickersFetcher = coinTickersFetcher
+        self.coinTickersProvider = coinTickersProvider
         self.activitiesService = activitiesService
         self.walletBalanceService = walletBalanceService
         self.blockiesGenerator = blockiesGenerator
@@ -152,7 +156,7 @@ class TokensCoordinator: Coordinator {
                 walletConnectCoordinator.openSession(url: url)
             }
         } else {
-            launchUniversalScanner(fromSource: .walletScreen)
+            showUniversalScanner(fromSource: .walletScreen)
         }
     }
 
@@ -194,7 +198,7 @@ class TokensCoordinator: Coordinator {
             analytics: analytics,
             nftProvider: session.nftProvider,
             tokenActionsProvider: tokenActionsService,
-            coinTickersFetcher: coinTickersFetcher,
+            coinTickersProvider: coinTickersProvider,
             activitiesService: activitiesService,
             alertService: alertService,
             tokensPipeline: tokensPipeline,
@@ -217,7 +221,7 @@ class TokensCoordinator: Coordinator {
         return singleChainTokenCoordinators.first { $0.isServer(server) }
     }
 
-    func launchUniversalScanner(fromSource source: Analytics.ScanQRCodeSource) {
+    func showUniversalScanner(fromSource source: Analytics.ScanQRCodeSource) {
         let scanQRCodeCoordinator = ScanQRCodeCoordinator(
             analytics: analytics,
             navigationController: navigationController,
@@ -234,6 +238,18 @@ class TokensCoordinator: Coordinator {
 
         coordinator.start(fromSource: source, clipboardString: UIPasteboard.general.stringForQRCode)
     }
+
+    private func displayAttestation(_ attestation: Attestation) {
+        let vc = AttestationViewController(attestation: attestation)
+        vc.delegate = self
+        vc.hidesBottomBarWhenPushed = true
+        vc.navigationItem.largeTitleDisplayMode = .never
+        navigationController.pushViewController(vc, animated: true)
+    }
+
+    private func importAttestation(_ attestation: Attestation, intoWallet address: AlphaWallet.Address) {
+        attestationsStore.addAttestation(attestation, forWallet: address)
+    }
 }
 
 extension UIPasteboard {
@@ -248,7 +264,7 @@ extension TokensCoordinator: TokensViewControllerDelegate {
     func buyCryptoSelected(in viewController: UIViewController) {
         delegate?.buyCrypto(wallet: wallet, server: .main, viewController: viewController, source: .walletTab)
     }
-    
+
     func viewWillAppear(in viewController: UIViewController) {
         guard !viewWillAppearHandled else { return }
         viewWillAppearHandled = true
@@ -275,7 +291,7 @@ extension TokensCoordinator: TokensViewControllerDelegate {
         }
         alertController.addAction(showMyWalletAddressAction)
 
-        if sessionsProvider.session(for: .main) != nil {
+        if sessionsProvider.session(for: .main) != nil && Features.current.isAvailable(.buyCryptoEnabled) {
             let buyAction = UIAlertAction(title: R.string.localizable.buyCryptoTitle(), style: .default) { [weak self] _ in
                 guard let strongSelf = self else { return }
                 strongSelf.delegate?.buyCrypto(wallet: strongSelf.wallet, server: .main, viewController: strongSelf.tokensViewController, source: .walletTab)
@@ -359,6 +375,10 @@ extension TokensCoordinator: TokensViewControllerDelegate {
         showSingleChainToken(token: token, in: navigationController)
     }
 
+    func didSelect(attestation: Attestation, in viewController: UIViewController) {
+        displayAttestation(attestation)
+    }
+
     func didTapOpenConsole(in viewController: UIViewController) {
         delegate?.openConsole(inCoordinator: self)
     }
@@ -403,6 +423,22 @@ extension TokensCoordinator: QRCodeResolutionCoordinatorDelegate {
             handleImportOrWatchWallet(.importWallet(params: .seedPhase(seedPhase: seedPhase)))
         case .privateKey(let privateKey):
             handleImportOrWatchWallet(.importWallet(params: .privateKey(privateKey: privateKey)))
+        case .attestation(let attestation):
+            infoLog("Scanned attestation: \(attestation) for wallet: \(String(describing: attestation.recipient))")
+
+            //TODO prompt user to import the attestation?
+            if let recipient = attestation.recipient {
+                if recipient.isNull {
+                    importAttestation(attestation, intoWallet: wallet.address)
+                } else if recipient == wallet.address {
+                    importAttestation(attestation, intoWallet: wallet.address)
+                } else if keystore.wallets.contains(where: { $0.address == recipient }) {
+                    //TODO have a better UX, show user that it's imported, but to another wallet?
+                    importAttestation(attestation, intoWallet: wallet.address)
+                }
+            } else {
+                importAttestation(attestation, intoWallet: wallet.address)
+            }
         }
 
         removeCoordinator(coordinator)
@@ -510,7 +546,7 @@ extension TokensCoordinator: SingleChainTokenCoordinatorDelegate {
             alertService: alertService,
             currencyService: currencyService,
             tokenImageFetcher: tokenImageFetcher)
-        
+
         addCoordinator(coordinatorToAdd)
         coordinatorToAdd.delegate = self
         coordinatorToAdd.start()
@@ -536,7 +572,7 @@ extension TokensCoordinator: SingleChainTokenCoordinatorDelegate {
         delegate?.didTap(activity: activity, viewController: viewController, in: self)
     }
 
-    func didTap(transaction: TransactionInstance, viewController: UIViewController, in coordinator: SingleChainTokenCoordinator) {
+    func didTap(transaction: Transaction, viewController: UIViewController, in coordinator: SingleChainTokenCoordinator) {
         delegate?.didTap(transaction: transaction, viewController: viewController, in: self)
     }
 
@@ -572,5 +608,14 @@ extension TokensCoordinator: PromptBackupCoordinatorProminentPromptDelegate {
 extension TokensCoordinator: AddHideTokensCoordinatorDelegate {
     func didClose(in coordinator: AddHideTokensCoordinator) {
         removeCoordinator(coordinator)
+    }
+}
+
+extension TokensCoordinator: AttestationViewControllerDelegate {
+}
+
+extension TokensCoordinator: AttestationsViewControllerDelegate {
+    func openAttestation(_ attestation: Attestation, fromViewController: AttestationsViewController) {
+        displayAttestation(attestation)
     }
 }

@@ -26,7 +26,7 @@ class SendViewController: UIViewController {
     //We use weak link to make sure that token alert will be deallocated by close button tapping.
     //We storing link to make sure that only one alert is displaying on the screen.
     private weak var invalidTokenAlert: UIViewController?
-    private let domainResolutionService: DomainResolutionServiceType
+    private let domainResolutionService: DomainNameResolutionServiceType
     private var cancelable = Set<AnyCancellable>()
     private let qrCode = PassthroughSubject<String, Never>()
     private let didAppear = PassthroughSubject<Void, Never>()
@@ -36,7 +36,7 @@ class SendViewController: UIViewController {
         return view
     }()
     lazy var targetAddressTextField: AddressTextField = {
-        let targetAddressTextField = AddressTextField(domainResolutionService: domainResolutionService)
+        let targetAddressTextField = AddressTextField(server: viewModel.transactionType.server, domainResolutionService: domainResolutionService)
         targetAddressTextField.delegate = self
         targetAddressTextField.returnKeyType = .done
         targetAddressTextField.pasteButton.contentHorizontalAlignment = .right
@@ -59,7 +59,7 @@ class SendViewController: UIViewController {
     weak var delegate: SendViewControllerDelegate?
 
     init(viewModel: SendViewModel,
-         domainResolutionService: DomainResolutionServiceType,
+         domainResolutionService: DomainNameResolutionServiceType,
          tokenImageFetcher: TokenImageFetcher) {
 
         self.tokenImageFetcher = tokenImageFetcher

@@ -1,10 +1,17 @@
 // Copyright © 2020 Stormbird PTE. LTD.
 
 import Foundation
+import Combine
+import AlphaWalletCore
 import AlphaWalletLogger
 
+public protocol FeaturesDelegate: AnyObject {
+    func featuresModified(_ features: Features)
+}
+
 public class Features {
-    public static let `default`: Features = Features()!
+    public static let current: Features = Features()!
+    public weak static var delegate: FeaturesDelegate?
 
     private let encoder: JSONEncoder = JSONEncoder()
     private let fileUrl: URL
@@ -13,6 +20,7 @@ public class Features {
         return (Environment.isTestFlight || Environment.isDebug)
     }
     private var featuresDictionary: AtomicDictionary<FeaturesAvailable, Bool> = .init()
+    //TODO we only have this because we ant to be able to announce changes, but seems tedious to use @Published instead
 
     public init?(fileName: String = "Features.json") {
         do {
@@ -60,6 +68,7 @@ public class Features {
         guard isMutationAvailable else { return }
         featuresDictionary[item] = value
         writeToFileUrl()
+        Self.delegate?.featuresModified(self)
     }
 
     public func invert(_ item: FeaturesAvailable) {
@@ -94,10 +103,12 @@ public enum FeaturesAvailable: String, CaseIterable, Codable {
     case isTokenScriptSignatureStatusEnabled
     case isSwapEnabled
     case isCoinbasePayEnabled
+    case buyCryptoEnabled
     case isLoggingEnabledForTickerMatches
     case isChangeCurrencyEnabled
     case isNftTransferEnabled
     case isEip1559Enabled
+    case areNotificationsEnabled
 
     public var defaultValue: Bool {
         switch self {
@@ -118,11 +129,13 @@ public enum FeaturesAvailable: String, CaseIterable, Codable {
         case .isBlockscanChatEnabled: return true
         case .isTokenScriptSignatureStatusEnabled: return false
         case .isSwapEnabled: return true
+        case .buyCryptoEnabled: return false
         case .isCoinbasePayEnabled: return true
         case .isLoggingEnabledForTickerMatches: return false
         case .isChangeCurrencyEnabled: return false
         case .isNftTransferEnabled: return false
         case .isEip1559Enabled: return false
+        case .areNotificationsEnabled: return false
         }
     }
 

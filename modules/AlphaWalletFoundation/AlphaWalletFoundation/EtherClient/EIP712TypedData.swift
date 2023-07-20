@@ -6,6 +6,7 @@
 
 /// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-712.md
 import Foundation
+import AlphaWalletABI
 import BigInt
 
 /// A struct represents EIP712 type tuple
@@ -70,7 +71,7 @@ public struct EIP712TypedData: Codable {
 
 extension EIP712TypedData {
     /// Sign-able hash for an `EIP712TypedData`
-    var digest: Data {
+    public var digest: Data {
         let data = Data(bytes: [0x19, 0x01]) + hashStruct(domain, type: "EIP712Domain") + hashStruct(message, type: primaryType)
         return Crypto.hash(data)
     }

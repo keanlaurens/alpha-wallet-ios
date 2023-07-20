@@ -10,7 +10,7 @@ import SwiftyJSON
 
 public struct UniqueNonEmptyContracts {
     let uniqueNonEmptyContracts: [AlphaWallet.Address]
-    let maxBlockNumber: Int?
+    let nextPage: TransactionsPagination?
 }
 
 struct UniqueNonEmptyContractsDecoder {
@@ -34,20 +34,26 @@ struct UniqueNonEmptyContractsDecoder {
         let uniqueNonEmptyContracts = Set(nonEmptyContracts).compactMap { AlphaWallet.Address(uncheckedAgainstNullAddress: $0) }
         let maxBlockNumber = contracts.compactMap { $0.1 }.max()
 
-        return .init(uniqueNonEmptyContracts: uniqueNonEmptyContracts, maxBlockNumber: maxBlockNumber)
+        if let maxBlockNumber = maxBlockNumber, maxBlockNumber > 0 {
+            let nextPage = BlockBasedPagination(startBlock: maxBlockNumber + 1, endBlock: nil)
+            return .init(uniqueNonEmptyContracts: uniqueNonEmptyContracts, nextPage: nextPage)
+        } else {
+            return .init(uniqueNonEmptyContracts: uniqueNonEmptyContracts, nextPage: nil)
+        }
     }
 }
 
 extension UniqueNonEmptyContracts {
+
     init(json: JSON, tokenType: Eip20TokenType) {
         let contracts: [(String, Int?)] = json["result"].compactMap { _, json -> (String, Int?)? in
             let blockNumber = json["blockNumber"].string.flatMap { Int($0) }
             //NOTE: safe check to avoid incompatible contract matching with token type, blockout api returns erc20 and erc721 for same url, so we need to filter retults
             switch tokenType {
             case .erc20:
-                guard json["tokenID"].string == nil else { return nil }
+                guard json["tokenID"].stringValue.isEmpty && json["tokenValue"].stringValue.isEmpty else { return nil }
             case .erc721:
-                guard json["tokenID"].stringValue.nonEmpty else { return nil }
+                guard json["tokenID"].stringValue.nonEmpty && json["tokenValue"].stringValue.isEmpty else { return nil }
             case .erc1155:
                 guard json["tokenID"].stringValue.nonEmpty && json["tokenValue"].stringValue.nonEmpty else { return nil }
             }
@@ -65,9 +71,14 @@ extension UniqueNonEmptyContracts {
             return ("", blockNumber)
         }
         let nonEmptyContracts = contracts.map { $0.0 }.filter { !$0.isEmpty }
-
+        let maxBlockNumber = contracts.compactMap { $0.1 }.max()
         uniqueNonEmptyContracts = Set(nonEmptyContracts).compactMap { AlphaWallet.Address(uncheckedAgainstNullAddress: $0) }
-        maxBlockNumber = contracts.compactMap { $0.1 }.max()
+
+        if let maxBlockNumber = maxBlockNumber, maxBlockNumber > 0 {
+            self.nextPage = BlockBasedPagination(startBlock: maxBlockNumber + 1, endBlock: nil)
+        } else {
+            self.nextPage = nil
+        }
     }
 
 }

@@ -31,19 +31,6 @@ extension String {
     }
 }
 
-extension UserDefaults {
-    //NOTE: its quite important to use single instance of user defaults, otherwise the data will be written in different suites
-    private static let testSuiteDefaults = UserDefaults(suiteName: NSUUID().uuidString)!
-
-    public static var standardOrForTests: UserDefaults {
-        if isRunningTests() {
-            return testSuiteDefaults
-        } else {
-            return .standard
-        }
-    }
-}
-
 public enum AccessOptions {
     case accessibleWhenUnlocked
     case accessibleWhenUnlockedThisDeviceOnly(userPresenceRequired: Bool)
@@ -629,7 +616,7 @@ open class EtherKeystore: NSObject, Keystore {
 
     private func getPrivateKeyFromHdWallet0thAddress(forAccount account: AlphaWallet.Address, prompt: String, withUserPresence: Bool) -> WalletSeedOrKey {
         guard isHdWallet(account: account) else {
-            assertImpossibleCodePath()
+            preconditionFailure("Not expect to get a private key from HD wallet here")
             return .otherFailure
         }
         let seedResult = getSeedForHdWallet(forAccount: account, prompt: prompt, context: createContext(), withUserPresence: withUserPresence)

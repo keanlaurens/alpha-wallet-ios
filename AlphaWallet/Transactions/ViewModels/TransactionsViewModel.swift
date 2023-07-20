@@ -28,7 +28,7 @@ class TransactionsViewModel {
         let pullToRefreshState = reloadTransactions(input: input.pullToRefresh)
 
         let snapshot = transactionsService
-            .transactionsChangeset
+            .transactions(filter: .all)
             .map { TransactionsViewModel.functional.buildSectionViewModels(for: $0) }
             .receive(on: DispatchQueue.main)
             .prepend([])
@@ -45,7 +45,7 @@ class TransactionsViewModel {
         input.map { _ in Loadable<Void, Error>.loading }
             .delay(for: .seconds(1), scheduler: RunLoop.main)
             .handleEvents(receiveOutput: { _ in
-                //TODO: implement reloading transactions, not it realoads only when its updated in db
+                //TODO: implement reloading transactions, not it reloads only when its updated in db
             })
             .map { _ in Loadable<Void, Error>.done(()) }
             .share()
@@ -90,7 +90,7 @@ extension TransactionsViewModel.functional {
         return snapshot
     }
 
-    fileprivate static func buildSectionViewModels(for transactions: [TransactionInstance]) -> [TransactionsViewModel.SectionViewModel] {
+    fileprivate static func buildSectionViewModels(for transactions: [Transaction]) -> [TransactionsViewModel.SectionViewModel] {
         //Uses NSMutableArray instead of Swift array for performance. Really slow when dealing with 10k events, which is hardly a big wallet
         var newItems: [String: NSMutableArray] = [:]
         for transaction in transactions {
@@ -100,9 +100,9 @@ extension TransactionsViewModel.functional {
             newItems[date] = currentItems
         }
         let tuple = newItems.map { each in
-            (date: each.key, transactions: (each.value as? [TransactionInstance] ?? []).sorted { $0.date > $1.date })
+            (date: each.key, transactions: (each.value as? [Transaction] ?? []).sorted { $0.date > $1.date })
         }
-        let collapsedTransactions: [(date: String, transactions: [TransactionInstance])] = tuple.sorted { (o1, o2) -> Bool in
+        let collapsedTransactions: [(date: String, transactions: [Transaction])] = tuple.sorted { (o1, o2) -> Bool in
             guard let d1 = formatter.date(from: o1.date), let d2 = formatter.date(from: o2.date) else {
                 return false
             }
@@ -118,11 +118,13 @@ extension TransactionsViewModel.functional {
                     items.append(.standalone(each))
                 } else {
                     items.append(.group(each))
-                    items.append(contentsOf: each.localizedOperations.map { .item(transaction: each, operation: $0) })
+                    //NOTE: already stored localized operations might be duplicated, that could cause crash when building datasource snapshot, caught few times
+                    //apply .uniqued() to remove duplicates, updated code to filter operations when creating transaction object.
+                    items.append(contentsOf: each.localizedOperations.uniqued().map { .item(transaction: each, operation: $0) })
                 }
             }
 
-            return (date: date, transactionRows: items)
+            return (date: date, transactionRows: items.uniqued())
         }
     }
 

@@ -10,6 +10,7 @@ import XCTest
 import EthereumAddress
 import BigInt
 import AlphaWalletFoundation
+import struct AlphaWalletWeb3.FunctionCall
 
 class FunctionCallArgumentTests: XCTestCase {
 

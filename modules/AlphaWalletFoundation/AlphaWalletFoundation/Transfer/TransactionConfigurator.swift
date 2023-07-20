@@ -74,7 +74,7 @@ public class TransactionConfigurator {
             case .legacy(let gasPrice):
                 gasPriceEstimator = LegacyGasPriceEstimator(
                     blockchainProvider: session.blockchainProvider,
-                    networkService: networkService,
+                    networking: session.blockchainExplorer,
                     initialGasPrice: gasPrice)
             case .eip1559(let maxFeePerGas, let maxPriorityFeePerGas):
                 gasPriceEstimator = Eip1559GasPriceEstimator(
@@ -83,7 +83,7 @@ public class TransactionConfigurator {
                     initialMaxPriorityFeePerGas: maxPriorityFeePerGas)
             }
         } else {
-            if session.blockchainProvider.server.supportsEip1559 && Features.default.isAvailable(.isEip1559Enabled) && !isRunningTests() {
+            if session.blockchainProvider.server.supportsEip1559 && Features.current.isAvailable(.isEip1559Enabled) && !isRunningTests() {
                 gasPriceEstimator = Eip1559GasPriceEstimator(
                     blockchainProvider: session.blockchainProvider,
                     initialMaxFeePerGas: nil,
@@ -91,7 +91,7 @@ public class TransactionConfigurator {
             } else {
                 gasPriceEstimator = LegacyGasPriceEstimator(
                     blockchainProvider: session.blockchainProvider,
-                    networkService: networkService,
+                    networking: session.blockchainExplorer,
                     initialGasPrice: nil)
             }
         }

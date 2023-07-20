@@ -1,7 +1,6 @@
 // Copyright © 2020 Stormbird PTE. LTD.
 
 import UIKit
-import PromiseKit
 import AlphaWalletCore
 import AlphaWalletLogger
 import AlphaWalletOpenSea
@@ -25,7 +24,7 @@ public struct TokenImage {
 }
 
 public protocol ImageFetcher: AnyObject {
-    func retrieveImage(with url: URL) -> Promise<UIImage>
+    func retrieveImage(with url: URL) async throws -> UIImage
 }
 
 public protocol HasTokenImage {
@@ -74,6 +73,7 @@ public class TokenImageFetcherImpl: TokenImageFetcher {
     private let tokenGroupsIdentifier: TokenGroupIdentifierProtocol
     private let spamImage: UIImage
     private let subscribables: AtomicDictionary<String, CurrentValueSubject<TokenImage?, Never>> = .init()
+    private let inFlightTasks: AtomicDictionary<String, Task<Void, Never>> = .init()
 
     enum ImageAvailabilityError: LocalizedError {
         case notAvailable
@@ -82,7 +82,7 @@ public class TokenImageFetcherImpl: TokenImageFetcher {
     public init(networking: ImageFetcher,
                 tokenGroupIdentifier: TokenGroupIdentifierProtocol,
                 spamImage: UIImage) {
-        
+
         self.networking = networking
         self.tokenGroupsIdentifier = tokenGroupIdentifier
         self.spamImage = spamImage
@@ -176,7 +176,7 @@ public class TokenImageFetcherImpl: TokenImageFetcher {
                       staticOverlayIcon: UIImage?,
                       blockChainNameColor: UIColor,
                       serverIconImage: UIImage?) -> TokenImagePublisher {
-        
+
         let subject: CurrentValueSubject<TokenImage?, Never>
         let key = "\(contractAddress.eip55String)-\(server.chainID)-\(size.rawValue)"
         if let sub = subscribables[key] {
@@ -214,23 +214,28 @@ public class TokenImageFetcherImpl: TokenImageFetcher {
             return subject.eraseToAnyPublisher()
         }
 
-        firstly {
-            self.fetchFromAssetGitHubRepo(.alphaWallet, contractAddress: contractAddress)
-                .map { image -> TokenImage in
-                    return .init(image: .image(.loaded(image: image)), isFinal: true, overlayServerIcon: staticOverlayIcon)
+        if inFlightTasks[key] == nil {
+            inFlightTasks[key] = Task { @MainActor in
+                if let image = try? await self.fetchFromAssetGitHubRepo(.alphaWallet, contractAddress: contractAddress) {
+                    let tokenImage = TokenImage(image: .image(.loaded(image: image)), isFinal: true, overlayServerIcon: staticOverlayIcon)
+                    subject.send(tokenImage)
+                    return
                 }
-        }.recover { _ -> Promise<TokenImage> in
-            let url = try TokenImageFetcherImpl.nftCollectionImageUrl(type, balance: balance, size: size)
-            return .value(.init(image: url, isFinal: true, overlayServerIcon: staticOverlayIcon))
-        }.recover { _ -> Promise<TokenImage> in
-            return self.fetchFromAssetGitHubRepo(.thirdParty, contractAddress: contractAddress)
-                .map { image -> TokenImage in
-                    return .init(image: .image(.loaded(image: image)), isFinal: false, overlayServerIcon: staticOverlayIcon)
+                if let url = try? TokenImageFetcherImpl.nftCollectionImageUrl(type, balance: balance, size: size) {
+                    let tokenImage = TokenImage(image: url, isFinal: true, overlayServerIcon: staticOverlayIcon)
+                    subject.send(tokenImage)
+                    return
                 }
-        }.done { value in
-            subject.send(value)
-        }.catch { _ in
-            subject.send(generatedImage)
+                if let image = try? await self.fetchFromAssetGitHubRepo(.thirdParty, contractAddress: contractAddress) {
+                    let tokenImage = TokenImage(image: .image(.loaded(image: image)), isFinal: false, overlayServerIcon: staticOverlayIcon)
+                    subject.send(tokenImage)
+                    return
+                }
+
+                subject.send(generatedImage)
+
+                self.inFlightTasks[key] = nil
+            }
         }
 
         return subject.eraseToAnyPublisher()
@@ -252,18 +257,16 @@ public class TokenImageFetcherImpl: TokenImageFetcher {
         }
     }
 
-    //TODO: refactor
     private func fetchFromAssetGitHubRepo(_ githubAssetsSource: GithubAssetsURLResolver.Source,
-                                          contractAddress: AlphaWallet.Address) -> Promise<UIImage> {
+                                          contractAddress: AlphaWallet.Address) async throws -> UIImage {
 
-        struct AnyError: Error { }
         let urlString = githubAssetsSource.url(forContract: contractAddress)
         guard let url = URL(string: urlString) else {
             verboseLog("Loading token icon URL: \(urlString) error")
-            return .init(error: AnyError())
+            throw ImageAvailabilityError.notAvailable
         }
 
-        return networking.retrieveImage(with: url)
+        return try await networking.retrieveImage(with: url)
     }
 }
 

@@ -17,7 +17,7 @@ struct RequestViewModelOutput {
 
 class RequestViewModel {
     private let account: Wallet
-    private let domainResolutionService: DomainResolutionServiceType
+    private let domainResolutionService: DomainNameResolutionServiceType
 
     let backgroundColor: UIColor = Configuration.Color.Semantic.defaultViewBackground
 
@@ -27,8 +27,8 @@ class RequestViewModel {
             .foregroundColor: Configuration.Color.Semantic.labelTextActive
         ])
     }
-    
-    init(account: Wallet, domainResolutionService: DomainResolutionServiceType) {
+
+    init(account: Wallet, domainResolutionService: DomainNameResolutionServiceType) {
         self.account = account
         self.domainResolutionService = domainResolutionService
     }
@@ -57,8 +57,8 @@ class RequestViewModel {
     }
 
     private func resolveEns() -> AnyPublisher<String?, Never> {
-        domainResolutionService.resolveEns(address: account.address)
-            .map { ens -> EnsName? in return ens }
+        domainResolutionService.reverseResolveDomainName(address: account.address, server: RPCServer.forResolvingDomainNames)
+            .map { ens -> DomainName? in return ens }
             .replaceError(with: nil)
             .prepend(nil)
             .eraseToAnyPublisher()

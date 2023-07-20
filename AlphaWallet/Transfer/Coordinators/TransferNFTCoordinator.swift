@@ -40,7 +40,7 @@ class TransferNFTCoordinator: Coordinator {
     private let session: WalletSession
     private let assetDefinitionStore: AssetDefinitionStore
     private let analytics: AnalyticsLogger
-    private let domainResolutionService: DomainResolutionServiceType
+    private let domainResolutionService: DomainNameResolutionServiceType
     private let tokenHolder: TokenHolder
     private var transactionConfirmationResult: ConfirmResult? = .none
     private let transactionType: TransactionType
@@ -59,7 +59,7 @@ class TransferNFTCoordinator: Coordinator {
          transactionType: TransactionType,
          assetDefinitionStore: AssetDefinitionStore,
          analytics: AnalyticsLogger,
-         domainResolutionService: DomainResolutionServiceType,
+         domainResolutionService: DomainNameResolutionServiceType,
          tokensService: TokensProcessingPipeline,
          networkService: NetworkService,
          tokenImageFetcher: TokenImageFetcher) {
@@ -97,7 +97,7 @@ extension TransferNFTCoordinator: SendSemiFungibleTokenViewControllerDelegate {
                 keystore: keystore,
                 tokensService: tokensService,
                 networkService: networkService)
-            
+
             addCoordinator(coordinator)
             coordinator.delegate = self
 
@@ -133,7 +133,7 @@ extension TransferNFTCoordinator: SendSemiFungibleTokenViewControllerDelegate {
             navigationController: navigationController,
             account: session.account,
             domainResolutionService: domainResolutionService)
-        
+
         coordinator.delegate = self
         addCoordinator(coordinator)
         coordinator.start(fromSource: .addressTextField)
@@ -150,7 +150,7 @@ extension TransferNFTCoordinator: ScanQRCodeCoordinatorDelegate {
         removeCoordinator(coordinator)
     }
 
-    func didScan(result: String, in coordinator: ScanQRCodeCoordinator) {
+    func didScan(result: String, decodedValue: QrCodeValue, in coordinator: ScanQRCodeCoordinator) {
         removeCoordinator(coordinator)
         sendViewController.didScanQRCode(result)
     }
@@ -177,7 +177,7 @@ extension TransferNFTCoordinator: TransactionConfirmationCoordinatorDelegate {
             strongSelf.removeCoordinator(coordinator)
             strongSelf.transactionConfirmationResult = result
 
-            let coordinator = TransactionInProgressCoordinator(presentingViewController: strongSelf.navigationController)
+            let coordinator = TransactionInProgressCoordinator(presentingViewController: strongSelf.navigationController, server: strongSelf.session.server)
             coordinator.delegate = strongSelf
             strongSelf.addCoordinator(coordinator)
 

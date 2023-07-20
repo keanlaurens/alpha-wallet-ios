@@ -6,8 +6,10 @@
 //
 
 import Foundation
-import CoreFoundation
 import Combine
+import CoreFoundation
+import AlphaWalletCore
+import AlphaWalletTokenScript
 import CombineExt
 
 public protocol ActivitiesServiceType: AnyObject {
@@ -30,6 +32,7 @@ public class ActivitiesService: ActivitiesServiceType {
     private let eventsActivityDataStore: EventsActivityDataStoreProtocol
     //Dictionary for lookup. Using `.firstIndex` too many times is too slow (60s for 10k events)
     private var activitiesIndexLookup: AtomicDictionary<Int, (index: Int, activity: Activity)> = .init()
+    private var cancellableSet: AtomicDictionary<AddressAndRPCServer, AnyCancellable> = .init()
     private var activities: AtomicArray<Activity> = .init()
     private let didUpdateActivitySubject: PassthroughSubject<Activity, Never> = .init()
     private let activitiesSubject: CurrentValueSubject<[ActivityCollection.MappedToDateActivityOrTransaction], Never> = .init([])
@@ -52,7 +55,7 @@ public class ActivitiesService: ActivitiesServiceType {
     }
 
     private let activitiesGenerator: ActivitiesGenerator
-    
+
     init(sessionsProvider: SessionsProvider,
          eventsActivityDataStore: EventsActivityDataStoreProtocol,
          transactionDataStore: TransactionDataStore,
@@ -128,7 +131,7 @@ public class ActivitiesService: ActivitiesServiceType {
     public func reinject(activity: Activity) {
         guard let tokenHolders = activitiesGenerator.tokensAndTokenHolders[activity.token.addressAndRPCServer] else { return }
 
-        refreshActivity(token: activity.token, tokenHolder: tokenHolders[0], activity: activity, isFirstUpdate: true)
+        refreshActivity(token: activity.token, tokenHolder: tokenHolders[0], activity: activity)
     }
 
     private func combineActivitiesWithTransactions() {
@@ -144,7 +147,7 @@ public class ActivitiesService: ActivitiesServiceType {
     }
 
     //Combining includes filtering around activities (from events) for ERC20 send/receive transactions which are already covered by transactions
-    private func combine(activities: [Activity], with transactions: [TransactionInstance]) -> [ActivityRowModel] {
+    private func combine(activities: [Activity], with transactions: [Transaction]) -> [ActivityRowModel] {
         let all: [ActivityOrTransactionInstance] = activities.map { .activity($0) } + transactions.map { .transaction($0) }
         let sortedAll: [ActivityOrTransactionInstance] = all.sorted { $0.blockNumber < $1.blockNumber }
         let counters = Dictionary(grouping: sortedAll, by: \.blockNumber)
@@ -161,7 +164,7 @@ public class ActivitiesService: ActivitiesServiceType {
         } else if activityOrTransactions.count > 1 {
             let activities: [Activity] = activityOrTransactions.compactMap(\.activity)
             //TODO will we ever have more than 1 transaction object (not activity/event) in the database for the same block number? Maybe if we get 1 from normal Etherscan endpoint and another from Etherscan ERC20 history endpoint?
-            if let transaction: TransactionInstance = activityOrTransactions.compactMap(\.transaction).first {
+            if let transaction: Transaction = activityOrTransactions.compactMap(\.transaction).first {
                 var results: [ActivityRowModel] = .init()
                 let activities: [Activity] = activities.filter { activity in
                     let operations = transaction.localizedOperations
@@ -219,7 +222,7 @@ public class ActivitiesService: ActivitiesServiceType {
         }
     }
 
-    private func isSwap(activities: [Activity], operations: [LocalizedOperationObjectInstance], wallet: Wallet) -> Bool {
+    private func isSwap(activities: [Activity], operations: [LocalizedOperation], wallet: Wallet) -> Bool {
         //Might have other transactions like approved embedded, so we can't check for all send and receives.
         let hasSend = activities.contains { $0.isSend } || operations.contains { $0.isSend(from: wallet.address) }
         let hasReceive = activities.contains { $0.isReceive } || operations.contains { $0.isReceived(by: wallet.address) }
@@ -227,26 +230,26 @@ public class ActivitiesService: ActivitiesServiceType {
     }
 
     //Important to pass in the `TokenHolder` instance and not re-create so that we don't override the subscribable values for the token with ones that are not resolved yet
-    private func refreshActivity(token: Token, tokenHolder: TokenHolder, activity: Activity, isFirstUpdate: Bool = true) {
+    private func refreshActivity(token: Token, tokenHolder: TokenHolder, activity: Activity) {
         let attributeValues = AssetAttributeValues(attributeValues: tokenHolder.values)
-        let resolvedAttributeNameValues = attributeValues.resolve { [weak self, weak tokenHolder] _ in
-            guard let tokenHolder = tokenHolder, isFirstUpdate else { return }
-            self?.refreshActivity(token: token, tokenHolder: tokenHolder, activity: activity, isFirstUpdate: false)
-        }
+        cancellableSet[token.addressAndRPCServer] = attributeValues.resolveAllAttributes()
+            .sink(receiveValue: { [weak self] resolvedAttributeNameValues in
+                guard let stronSelf = self else { return }
 
-        //NOTE: Fix crush when element with index out of range
-        if let (index, oldActivity) = activitiesIndexLookup[activity.id] {
-            let updatedValues = (token: oldActivity.values.token.merging(resolvedAttributeNameValues) { _, new in new }, card: oldActivity.values.card)
-            let updatedActivity: Activity = .init(id: oldActivity.id, rowType: oldActivity.rowType, token: token, server: oldActivity.server, name: oldActivity.name, eventName: oldActivity.eventName, blockNumber: oldActivity.blockNumber, transactionId: oldActivity.transactionId, transactionIndex: oldActivity.transactionIndex, logIndex: oldActivity.logIndex, date: oldActivity.date, values: updatedValues, view: oldActivity.view, itemView: oldActivity.itemView, isBaseCard: oldActivity.isBaseCard, state: oldActivity.state)
+                //NOTE: Fix crush when element with index out of range
+                if let (index, oldActivity) = stronSelf.activitiesIndexLookup[activity.id] {
+                    let updatedValues = (token: oldActivity.values.token.merging(resolvedAttributeNameValues) { _, new in new }, card: oldActivity.values.card)
+                    let updatedActivity: Activity = .init(id: oldActivity.id, rowType: oldActivity.rowType, token: token, server: oldActivity.server, name: oldActivity.name, eventName: oldActivity.eventName, blockNumber: oldActivity.blockNumber, transactionId: oldActivity.transactionId, transactionIndex: oldActivity.transactionIndex, logIndex: oldActivity.logIndex, date: oldActivity.date, values: updatedValues, view: oldActivity.view, itemView: oldActivity.itemView, isBaseCard: oldActivity.isBaseCard, state: oldActivity.state)
 
-            if activities.contains(index: index) {
-                activities[index] = updatedActivity
+                    if stronSelf.activities.contains(index: index) {
+                        stronSelf.activities[index] = updatedActivity
 
-                didUpdateActivitySubject.send(updatedActivity)
-            }
-        } else {
-            //no-op. We should be able to find it unless the list of activities has changed
-        }
+                        stronSelf.didUpdateActivitySubject.send(updatedActivity)
+                    }
+                } else {
+                    //no-op. We should be able to find it unless the list of activities has changed
+                }
+            })
     }
 
     //We can't run this in `activities` didSet {} because this will then be run unnecessarily, when we refresh each activity (we only want this to update when we refresh the entire activity list)
@@ -259,7 +262,7 @@ public class ActivitiesService: ActivitiesServiceType {
     }
 }
 
-fileprivate func == (activity: Activity, operation: LocalizedOperationObjectInstance) -> Bool {
+fileprivate func == (activity: Activity, operation: LocalizedOperation) -> Bool {
     func isSameFrom() -> Bool {
         guard let from = activity.values.card["from"]?.addressValue, from.sameContract(as: operation.from) else { return false }
         return true
@@ -301,7 +304,7 @@ fileprivate func == (activity: Activity, operation: LocalizedOperationObjectInst
     return true
 }
 
-fileprivate func != (activity: Activity, operation: LocalizedOperationObjectInstance) -> Bool {
+fileprivate func != (activity: Activity, operation: LocalizedOperation) -> Bool {
     !(activity == operation)
 }
 

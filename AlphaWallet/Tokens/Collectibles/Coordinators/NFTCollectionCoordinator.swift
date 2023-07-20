@@ -16,7 +16,7 @@ import AlphaWalletFoundation
 protocol NFTCollectionCoordinatorDelegate: AnyObject, CanOpenURL {
     func didClose(in coordinator: NFTCollectionCoordinator)
     func didPress(for type: PaymentFlow, inViewController viewController: UIViewController, in coordinator: NFTCollectionCoordinator)
-    func didTap(transaction: TransactionInstance, in coordinator: NFTCollectionCoordinator)
+    func didTap(transaction: Transaction, in coordinator: NFTCollectionCoordinator)
     func didTap(activity: Activity, in coordinator: NFTCollectionCoordinator)
 }
 
@@ -146,7 +146,7 @@ extension NFTCollectionCoordinator: NFTCollectionViewControllerDelegate {
         showTokenCardSelection(tokenHolders: viewController.viewModel.tokenHolders.value)
     }
 
-    func didTap(transaction: TransactionInstance, in viewController: NFTCollectionViewController) {
+    func didTap(transaction: Transaction, in viewController: NFTCollectionViewController) {
         delegate?.didTap(transaction: transaction, in: self)
     }
 
@@ -295,7 +295,7 @@ extension NFTCollectionCoordinator: NonFungibleTokenViewControllerDelegate {
             controller.navigationItem.largeTitleDisplayMode = .never
             viewController.navigationController?.pushViewController(controller, animated: true)
         case .nativeCryptocurrency, .erc20:
-            assertImpossibleCodePath()
+            preconditionFailure("Not expect to transfer fungibles here")
         case .erc1155:
             let transactionType: TransactionType = .init(nonFungibleToken: token, tokenHolders: [tokenHolder])
             delegate?.didPress(for: .send(type: .transaction(transactionType)), inViewController: viewController, in: self)

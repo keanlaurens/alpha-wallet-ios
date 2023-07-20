@@ -8,21 +8,39 @@
 import Foundation
 import Combine
 
+extension RPCServer {
+    var autodetectTokenTypes: [Eip20TokenType] {
+        return [.erc20, .erc721, .erc1155]
+    }
+}
+
 public class ClientSideTokenSourceProvider: TokenSourceProvider {
     private lazy var tokensAutodetector: TokensAutodetector = {
-        let contractToImportStorage = ContractToImportFileStorage(server: session.server)
-        let autodetector = SingleChainTokensAutodetector(session: session, contractToImportStorage: contractToImportStorage, tokensDataStore: tokensDataStore, withAutoDetectTransactedTokensQueue: autoDetectTransactedTokensQueue, withAutoDetectTokensQueue: autoDetectTokensQueue, importToken: session.importToken)
-        return autodetector
+        let partnerTokensAutodetector = PartnerTokensAutodetector(
+            contractToImportStorage: ContractToImportFileStorage(server: session.server),
+            tokensDataStore: tokensDataStore,
+            importToken: session.importToken,
+            server: session.server)
+
+        let transactedTokensAutodetector = TransactedTokensAutodetector(
+            tokensDataStore: tokensDataStore,
+            importToken: session.importToken,
+            session: session,
+            blockchainExplorer: session.blockchainExplorer,
+            tokenTypes: session.server.autodetectTokenTypes)
+
+        return SingleChainTokensAutodetector(autodetectors: [
+            partnerTokensAutodetector,
+            transactedTokensAutodetector
+        ])
     }()
     private var cancelable = Set<AnyCancellable>()
     private let tokensDataStore: TokensDataStore
-    private let autoDetectTransactedTokensQueue: OperationQueue
-    private let autoDetectTokensQueue: OperationQueue
     private let refreshSubject = PassthroughSubject<Void, Never>.init()
     private let balanceFetcher: TokenBalanceFetcherType
 
     public private (set) lazy var addedTokensPublisher: AnyPublisher<[Token], Never> = {
-        return tokensDataStore.tokensChangesetPublisher(for: [session.server])
+        return tokensDataStore.tokensChangesetPublisher(for: [session.server], predicate: nil)
             .map { changeset -> [Token] in
                 switch changeset {
                 case .initial, .error: return []
@@ -50,32 +68,36 @@ public class ClientSideTokenSourceProvider: TokenSourceProvider {
     public let session: WalletSession
 
     public init(session: WalletSession,
-                autoDetectTransactedTokensQueue: OperationQueue,
-                autoDetectTokensQueue: OperationQueue,
                 tokensDataStore: TokensDataStore,
                 balanceFetcher: TokenBalanceFetcherType) {
 
         self.session = session
         self.tokensDataStore = tokensDataStore
-        self.autoDetectTransactedTokensQueue = autoDetectTransactedTokensQueue
-        self.autoDetectTokensQueue = autoDetectTokensQueue
         self.balanceFetcher = balanceFetcher
     }
 
     public func start() {
         tokensDataStore.addEthToken(forServer: session.server)
 
-        startTokenAutodetection()
+        tokensAutodetector
+            .detectedTokensOrContracts
+            .map { $0.map { AddOrUpdateTokenAction($0) } }
+            .sink { [tokensDataStore] in tokensDataStore.addOrUpdate(with: $0) }
+            .store(in: &cancelable)
+
+        //NOTE: disabled as delating instances from db caused crash
+        //tokensAutodetector.start()
+
         balanceFetcher.delegate = self
     }
 
-    private func startTokenAutodetection() {
-        tokensAutodetector
-            .tokensOrContractsDetected
-            .sink { [tokensDataStore] in tokensDataStore.addOrUpdate(tokensOrContracts: $0) }
-            .store(in: &cancelable)
+    public func stop() {
+        cancelable.cancellAll()
+        tokensAutodetector.stop()
+    }
 
-        tokensAutodetector.start()
+    deinit {
+        stop()
     }
 
     public func refresh() {

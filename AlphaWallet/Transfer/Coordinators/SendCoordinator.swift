@@ -16,7 +16,7 @@ class SendCoordinator: Coordinator {
     private let tokensPipeline: TokensProcessingPipeline
     private let assetDefinitionStore: AssetDefinitionStore
     private let analytics: AnalyticsLogger
-    private let domainResolutionService: DomainResolutionServiceType
+    private let domainResolutionService: DomainNameResolutionServiceType
     private var transactionConfirmationResult: ConfirmResult? = .none
     private let sessionsProvider: SessionsProvider
     private let networkService: NetworkService
@@ -39,7 +39,7 @@ class SendCoordinator: Coordinator {
          tokensPipeline: TokensProcessingPipeline,
          assetDefinitionStore: AssetDefinitionStore,
          analytics: AnalyticsLogger,
-         domainResolutionService: DomainResolutionServiceType,
+         domainResolutionService: DomainNameResolutionServiceType,
          networkService: NetworkService,
          tokenImageFetcher: TokenImageFetcher,
          tokensService: TokensService) {
@@ -61,7 +61,7 @@ class SendCoordinator: Coordinator {
     func start() {
         navigationController.pushViewController(sendViewController, animated: true)
     }
-    
+
     private func makeSendViewController() -> SendViewController {
         let viewModel = SendViewModel(
             transactionType: transactionType,
@@ -80,7 +80,7 @@ class SendCoordinator: Coordinator {
         controller.hidesBottomBarWhenPushed = true
 
         return controller
-    } 
+    }
 }
 
 extension SendCoordinator: ScanQRCodeCoordinatorDelegate {
@@ -88,7 +88,7 @@ extension SendCoordinator: ScanQRCodeCoordinatorDelegate {
         removeCoordinator(coordinator)
     }
 
-    func didScan(result: String, in coordinator: ScanQRCodeCoordinator) {
+    func didScan(result: String, decodedValue: QrCodeValue, in coordinator: ScanQRCodeCoordinator) {
         removeCoordinator(coordinator)
         sendViewController.didScanQRCode(result)
     }
@@ -126,7 +126,7 @@ extension SendCoordinator: SendViewControllerDelegate {
             keystore: keystore,
             tokensService: tokensPipeline,
             networkService: networkService)
-        
+
         addCoordinator(coordinator)
         coordinator.delegate = self
         coordinator.start(fromSource: .sendFungible)
@@ -152,7 +152,7 @@ extension SendCoordinator: TransactionConfirmationCoordinatorDelegate {
 
             strongSelf.transactionConfirmationResult = result
 
-            let coordinator = TransactionInProgressCoordinator(presentingViewController: strongSelf.navigationController)
+            let coordinator = TransactionInProgressCoordinator(presentingViewController: strongSelf.navigationController, server: strongSelf.session.server)
             coordinator.delegate = strongSelf
             strongSelf.addCoordinator(coordinator)
 

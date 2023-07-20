@@ -18,13 +18,13 @@ extension TokenScript {
     public static func performTokenScriptAction(_ action: TokenInstanceAction, token: FoundationToken, tokenId: TokenId, tokenHolder: TokenHolder, userEntryIds: [String], fetchUserEntries: [Promise<Any?>], localRefsSource: TokenScriptLocalRefsSource, assetDefinitionStore: AssetDefinitionStore, keystore: Keystore, server: RPCServer, session: WalletSession, confirmTokenScriptActionTransactionDelegate: ConfirmTokenScriptActionTransactionDelegate?, navigationController: UINavigationController) {
         guard action.hasTransactionFunction else { return }
 
-        let xmlHandler = XMLHandler(token: token, assetDefinitionStore: assetDefinitionStore)
+        let xmlHandler = XMLHandler(contract: token.contractAddress, tokenType: token.type, assetDefinitionStore: assetDefinitionStore)
         let tokenLevelAttributeValues = xmlHandler.resolveAttributesBypassingCache(
             withTokenIdOrEvent: tokenHolder.tokens[0].tokenIdOrEvent,
             server: server,
-            account: session.account,
+            account: session.account.address,
             assetDefinitionStore: assetDefinitionStore)
-        
+
         let resolveTokenLevelSubscribableAttributes = Array(tokenLevelAttributeValues.values).filterToSubscribables.createPromiseForSubscribeOnce()
 
         firstly {
@@ -51,29 +51,19 @@ extension TokenScript {
         }.done { values in
             guard let transactionFunction = action.transactionFunction else { return }
             let contract = transactionFunction.originContractOrRecipientAddress
-            guard transactionFunction.generateDataAndValue(withTokenId: tokenId, attributeAndValues: values, localRefs: localRefsSource.localRefs, server: server, session: session, keystore: keystore) != nil else { return }
+            guard transactionFunction.generateDataAndValue(withTokenId: tokenId, attributeAndValues: values, localRefs: localRefsSource.localRefs, server: server, wallet: session.account.address) != nil else { return }
             confirmTokenScriptActionTransactionDelegate?.confirmTransactionSelected(in: navigationController, token: token, contract: contract, tokenId: tokenId, values: values, localRefs: localRefsSource.localRefs, server: server, session: session, keystore: keystore, transactionFunction: transactionFunction)
         }.cauterize()
         //TODO catch
     }
 
     private static func resolveActionAttributeValues(action: TokenInstanceAction, withUserEntryValues userEntryValues: [AttributeId: String], tokenLevelTokenIdOriginAttributeValues: [AttributeId: AssetAttributeSyntaxValue], tokenHolder: TokenHolder, server: RPCServer, session: WalletSession, localRefsSource: TokenScriptLocalRefsSource, assetDefinitionStore: AssetDefinitionStore) -> Promise<[AttributeId: AssetInternalValue]> {
-        return Promise { seal in
-            //TODO Not reading/writing from/to cache here because we haven't worked out volatility of attributes yet. So we assume all attributes used by an action as volatile, have to fetch the latest
-            //Careful to only resolve (and wait on) attributes that the smart contract function invocation is dependent on. Some action-level attributes might only be used for display
-            let attributeNameValues = assetDefinitionStore.assetAttributeResolver.resolve(withTokenIdOrEvent: tokenHolder.tokens[0].tokenIdOrEvent, userEntryValues: userEntryValues, server: server, account: session.account, additionalValues: tokenLevelTokenIdOriginAttributeValues, localRefs: localRefsSource.localRefs, attributes: action.attributesDependencies).mapValues { $0.value }
-            var allResolved = false
-            let attributes = AssetAttributeValues(attributeValues: attributeNameValues)
-            let resolvedAttributeNameValues = attributes.resolve { updatedValues in
-                guard !allResolved && attributes.isAllResolved else { return }
-                allResolved = true
-                seal.fulfill(updatedValues)
-            }
-            allResolved = attributes.isAllResolved
-            if allResolved {
-                seal.fulfill(resolvedAttributeNameValues)
-            }
-        }
+        //TODO Not reading/writing from/to cache here because we haven't worked out volatility of attributes yet. So we assume all attributes used by an action as volatile, have to fetch the latest
+        //Careful to only resolve (and wait on) attributes that the smart contract function invocation is dependent on. Some action-level attributes might only be used for display
+        let attributeNameValues = assetDefinitionStore.assetAttributeResolver.resolve(withTokenIdOrEvent: tokenHolder.tokens[0].tokenIdOrEvent, userEntryValues: userEntryValues, server: server, account: session.account.address, additionalValues: tokenLevelTokenIdOriginAttributeValues, localRefs: localRefsSource.localRefs, attributes: action.attributesDependencies).mapValues { $0.value }
+
+        let attributes = AssetAttributeValues(attributeValues: attributeNameValues)
+        return attributes.resolveAllAttributes().promise()
     }
 }
 

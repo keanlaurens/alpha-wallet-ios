@@ -15,7 +15,7 @@ class WalletCoordinator: Coordinator {
     private var keystore: Keystore
     private weak var importWalletViewController: ImportWalletViewController?
     private let analytics: AnalyticsLogger
-    private let domainResolutionService: DomainResolutionServiceType
+    private let domainResolutionService: DomainNameResolutionServiceType
     private var cancellable = Set<AnyCancellable>()
 
     var navigationController: UINavigationController
@@ -26,7 +26,7 @@ class WalletCoordinator: Coordinator {
          navigationController: UINavigationController = NavigationController(),
          keystore: Keystore,
          analytics: AnalyticsLogger,
-         domainResolutionService: DomainResolutionServiceType) {
+         domainResolutionService: DomainNameResolutionServiceType) {
 
         self.config = config
         self.navigationController = navigationController
@@ -172,8 +172,9 @@ extension WalletCoordinator: ImportWalletViewControllerDelegate {
 
         let coordinator = QRCodeResolutionCoordinator(
             coordinator: scanQRCodeCoordinator,
-            usage: .importWalletOnly)
-        
+            usage: .importWalletOnly,
+            supportedResolutions: QRCodeResolutionCoordinator.SupportedQrCodeResolution.jsonOrSeedPhraseResolution)
+
         coordinator.delegate = self
         addCoordinator(coordinator)
         coordinator.start(fromSource: .importWalletScreen)
@@ -189,7 +190,7 @@ extension WalletCoordinator: QRCodeResolutionCoordinatorDelegate {
 
     func coordinator(_ coordinator: QRCodeResolutionCoordinator, didResolve qrCodeResolution: QrCodeResolution) {
         switch qrCodeResolution {
-        case .walletConnectUrl, .transactionType, .url, .string:
+        case .walletConnectUrl, .transactionType, .url, .string, .attestation:
             break
         case .address(let address, _):
             importWalletViewController?.set(tabSelection: .watch)

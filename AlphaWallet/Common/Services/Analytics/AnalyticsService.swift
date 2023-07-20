@@ -1,9 +1,4 @@
-//
-//  BartercardAnalytics.swift
-//  AlphaWallet
-//
-//  Created by Vladyslav Shepitko on 06.11.2020.
-//
+// Copyright © 2020 Stormbird PTE. LTD.
 
 import Foundation
 import AlphaWalletFoundation
@@ -17,7 +12,7 @@ public final class AnalyticsService: NSObject, AnalyticsServiceType {
         super.init()
         //NOTE: set default state of sending analytics events
         if self.config.sendAnalyticsEnabled == nil {
-            self.config.sendAnalyticsEnabled = Features.default.isAvailable(.isAnalyticsUIEnabled)
+            self.config.sendAnalyticsEnabled = Features.current.isAvailable(.isAnalyticsUIEnabled)
         }
         if Constants.Credentials.analyticsKey.nonEmpty && !Environment.isTestFlight {
             mixpanelService = MixpanelService(withKey: Constants.Credentials.analyticsKey)

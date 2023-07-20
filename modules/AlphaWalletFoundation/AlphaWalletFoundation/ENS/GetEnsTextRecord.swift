@@ -10,13 +10,13 @@ import Combine
 
 /// https://eips.ethereum.org/EIPS/eip-634
 final class GetEnsTextRecord {
-    private let storage: EnsRecordsStorage
+    private let storage: DomainNameRecordsStorage
     private lazy var ens = ENS(delegate: ensDelegate, chainId: server.chainID)
     private let server: RPCServer
     private let ensReverseLookup: EnsReverseResolver
     private let ensDelegate: ENSDelegateImpl
 
-    init(blockchainProvider: BlockchainProvider, storage: EnsRecordsStorage) {
+    init(blockchainProvider: BlockchainProvider, storage: DomainNameRecordsStorage) {
         self.ensDelegate = ENSDelegateImpl(blockchainProvider: blockchainProvider)
         self.storage = storage
         self.server = blockchainProvider.server
@@ -37,17 +37,17 @@ final class GetEnsTextRecord {
 
         return ens.getTextRecord(forName: name, recordKey: record)
             .handleEvents(receiveOutput: { [storage, server] value in
-                let key = EnsLookupKey(nameOrAddress: name, server: server, record: record)
+                let key = DomainNameLookupKey(nameOrAddress: name, server: server, record: record)
                 storage.addOrUpdate(record: .init(key: key, value: .record(value)))
             }).eraseToAnyPublisher()
     }
 
     private func cachedResult(forName name: String, record: EnsTextRecordKey) -> String? {
-        let key = EnsLookupKey(nameOrAddress: name, server: server, record: record)
-        switch storage.record(for: key, expirationTime: Constants.Ens.recordExpiration)?.value {
+        let key = DomainNameLookupKey(nameOrAddress: name, server: server, record: record)
+        switch storage.record(for: key, expirationTime: Constants.DomainName.recordExpiration)?.value {
         case .record(let record):
             return record
-        case .ens, .address, .none:
+        case .domainName, .address, .none:
             return nil
         }
     }
@@ -76,7 +76,7 @@ extension GetEnsTextRecord {
             //NOTE: once open sea image url cached it will be here as `url`, so the next time we willn't decode it as eip155 and return it as it is
             guard let result = Eip155UrlCoder.decode(from: _url) else {
                 guard let url = URL(string: _url) else {
-                    return .fail(.embeded(AnyError.blockieCreateFailure))
+                    return .fail(.embedded(AnyError.blockieCreateFailure))
                 }
                 //NOTE: fallback to URL in case if result isn't eip155
                 return .just(.image(image: .url(url: WebImageURL(url: url, rewriteGoogleContentSizeUrl: .s120), isEnsAvatar: true), raw: _url))

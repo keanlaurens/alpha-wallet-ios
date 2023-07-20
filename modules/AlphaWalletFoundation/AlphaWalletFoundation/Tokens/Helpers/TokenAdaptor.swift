@@ -7,11 +7,21 @@
 //
 
 import Foundation
+import AlphaWalletTokenScript
 import AlphaWalletOpenSea
 import BigInt
 import Combine
 
 extension TokenHolder: ObservableObject { }
+
+private var subjectCancellableKey: Void?
+extension TokenHolder {
+
+    fileprivate var cancellable: Cancellable? {
+      get { objc_getAssociatedObject(self, &subjectCancellableKey) as? Cancellable }
+      set { objc_setAssociatedObject(self, &subjectCancellableKey, newValue, .OBJC_ASSOCIATION_RETAIN) }
+    }
+}
 
 public struct TokenAdaptor {
     let nftProvider: NFTProvider
@@ -61,16 +71,13 @@ public struct TokenAdaptor {
     public func getTokenHolder(token: TokenScriptSupportable) -> TokenHolder {
         //TODO id 1 for fungibles. Might come back to bite us?
         let hardcodedTokenIdForFungibles = BigUInt(1)
-        let xmlHandler = XMLHandler(token: token, assetDefinitionStore: assetDefinitionStore)
+        let xmlHandler = XMLHandler(contract: token.contractAddress, tokenType: token.type, assetDefinitionStore: assetDefinitionStore)
             //TODO Event support, if/when designed for fungibles
         let values = xmlHandler.resolveAttributesBypassingCache(
             withTokenIdOrEvent: .tokenId(tokenId: hardcodedTokenIdForFungibles),
             server: token.server,
-            account: wallet,
+            account: wallet.address,
             assetDefinitionStore: assetDefinitionStore)
-
-        let subscribablesForAttributeValues = values.values
-        let allResolved = subscribablesForAttributeValues.allSatisfy { $0.subscribableValue?.value != nil }
 
         let tokenScriptToken = TokenScript.Token(
             tokenIdOrEvent: .tokenId(tokenId: hardcodedTokenIdForFungibles),
@@ -83,16 +90,13 @@ public struct TokenAdaptor {
 
         let tokenHolder = TokenHolder(tokens: [tokenScriptToken], contractAddress: token.contractAddress, hasAssetDefinition: true)
 
-        if allResolved {
-            //no-op
-        } else {
-            for each in subscribablesForAttributeValues {
-                guard let subscribable = each.subscribableValue else { continue }
-                subscribable.sinkAsync { [weak tokenHolder] _ in
-                    tokenHolder?.objectWillChange.send()
-                }
+        //NOTE: resolve all attibutest at once and notify token holder
+        let assetAttributeValues = AssetAttributeValues(attributeValues: values)
+        tokenHolder.cancellable = assetAttributeValues.resolveAllAttributes()
+            .sink { [weak tokenHolder] _ in
+                tokenHolder?.objectWillChange.send()
+                tokenHolder?.cancellable = nil
             }
-        }
 
         return tokenHolder
     }
@@ -222,7 +226,7 @@ public struct TokenAdaptor {
             symbol: symbol,
             fromTokenIdOrEvent: tokenIdOrEvent,
             index: index,
-            inWallet: wallet,
+            inWallet: wallet.address,
             server: token.server,
             tokenType: token.type,
             assetDefinitionStore: assetDefinitionStore)
@@ -280,7 +284,7 @@ public struct TokenAdaptor {
         var values = xmlHandler.resolveAttributesBypassingCache(
             withTokenIdOrEvent: tokenIdOrEvent,
             server: token.server,
-            account: wallet,
+            account: wallet.address,
             assetDefinitionStore: assetDefinitionStore)
 
         values.setTokenId(string: nonFungible.tokenId)
