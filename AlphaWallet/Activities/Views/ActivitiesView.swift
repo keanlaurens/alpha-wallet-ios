@@ -6,9 +6,10 @@
 //
 
 import UIKit
+import AlphaWalletFoundation
+import AlphaWalletTokenScript
 import BigInt
 import StatefulViewController
-import AlphaWalletFoundation
 
 protocol ActivitiesViewDelegate: AnyObject {
     func didPressActivity(activity: Activity, in view: ActivitiesView)
@@ -148,9 +149,10 @@ extension ActivitiesView: UITableViewDataSource {
     private func setupTokenScriptRendererViewForCellOnce(cell: ActivityViewCell) {
         guard cell.tokenScriptRendererView == nil else { return }
 
-        let tokenScriptRendererView: TokenInstanceWebView = {
+        let tokenScriptRendererView: TokenScriptWebView = {
             //TODO server value doesn't matter since we will change it later. But we should improve this
-            let webView = TokenInstanceWebView(server: .main, wallet: wallet, assetDefinitionStore: assetDefinitionStore)
+            let webView = TokenScriptWebView(server: .main, serverWithInjectableRpcUrl: RPCServer.main, wallet: wallet.type, assetDefinitionStore: assetDefinitionStore)
+            webView.backgroundColor = Configuration.Color.Semantic.defaultViewBackground
             //TODO needed? Seems like scary, performance-wise
             //webView.delegate = self
             return webView
@@ -224,13 +226,19 @@ extension ActivitiesView: UITableViewDataSource {
     }
 
     func tableView(_ tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? {
-        return ActivitiesViewController.functional.headerView(for: section, viewModel: viewModel)
+        return functional.headerView(for: section, viewModel: viewModel)
     }
 
     func tableView(_ tableView: UITableView, willDisplayHeaderView view: UIView, forSection section: Int) {
     }
+}
 
-    fileprivate func headerView(for section: Int) -> UIView {
+extension ActivitiesView {
+    enum functional {}
+}
+
+fileprivate extension ActivitiesView.functional {
+    static func headerView(for section: Int, viewModel: ActivitiesViewModel) -> UIView {
         let container = UIView()
         container.backgroundColor = viewModel.headerBackgroundColor
         let title = UILabel()
@@ -244,5 +252,5 @@ extension ActivitiesView: UITableViewDataSource {
             title.anchorsConstraint(to: container, edgeInsets: .init(top: 18, left: 20, bottom: 16, right: 0))
         ])
         return container
-    }
+}
 }

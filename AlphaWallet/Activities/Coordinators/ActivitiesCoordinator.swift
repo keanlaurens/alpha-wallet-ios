@@ -56,7 +56,7 @@ class ActivitiesCoordinator: NSObject, Coordinator {
         let viewModel = ActivitiesViewModel(collection: .init())
         let controller = ActivitiesViewController(analytics: analytics, keystore: keystore, wallet: wallet, viewModel: viewModel, sessionsProvider: sessionsProvider, assetDefinitionStore: assetDefinitionStore, tokenImageFetcher: tokenImageFetcher)
         controller.delegate = self
-        
+
         return controller
     }
 
@@ -68,6 +68,9 @@ class ActivitiesCoordinator: NSObject, Coordinator {
 extension ActivitiesCoordinator: ActivitiesViewControllerDelegate {
 
     func subscribeForActivitiesUpdates() {
+        if Config().development.shouldDisableActivities {
+            return
+        }
         activitiesService.activitiesPublisher
             .receive(on: RunLoop.main)
             .sink { [weak rootViewController] activities in

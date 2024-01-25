@@ -101,8 +101,10 @@ public func callSmartContract(withServer server: RPCServer, contract contractAdd
 
             let promise: Promise<[String: Any]> = promiseCreator.callPromise(options: web3Options)
                 .recover(on: callSmartContractQueue, { error -> Promise<[String: Any]> in
-                        //NOTE: We only want to log rate limit errors above
-                    guard case AlphaWalletWeb3.Web3Error.rateLimited = error else { throw error }
+                    //NOTE: We only want to log rate limit errors above
+                    guard case AlphaWalletWeb3.Web3Error.rateLimited = error else {
+                        throw error
+                    }
                     warnLog("[API] Rate limited by RPC node server: \(server)")
 
                     throw error
@@ -113,6 +115,18 @@ public func callSmartContract(withServer server: RPCServer, contract contractAdd
             return promise
         }
     })
+}
+
+public func callSmartContractAsync(withServer server: RPCServer, contract contractAddress: AlphaWallet.Address, functionName: String, abiString: String, parameters: [AnyObject] = [], shouldDelayIfCached: Bool = false) async throws -> [String: Any] {
+    return try await withCheckedThrowingContinuation { continuation in
+        firstly {
+            callSmartContract(withServer: server, contract: contractAddress, functionName: functionName, abiString: abiString, parameters: parameters)
+        }.done {
+            continuation.resume(returning: $0)
+        }.catch { error in
+            continuation.resume(throwing: error)
+        }
+    }
 }
 
 public func getSmartContractCallData(withServer server: RPCServer, contract contractAddress: AlphaWallet.Address, functionName: String, abiString: String, parameters: [AnyObject] = []) -> Data? {

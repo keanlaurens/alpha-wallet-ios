@@ -19,6 +19,9 @@ public enum BiometryAuthenticationType {
             return .touchID
         case .faceID:
             return .faceID
+        @unknown default:
+            //TODO For Xcode 15's .opticID and anything in the future
+            return none
         }
     }
 }

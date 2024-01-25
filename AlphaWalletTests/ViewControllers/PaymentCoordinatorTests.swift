@@ -15,7 +15,7 @@ extension TokensFilter {
 
 extension RealmStore {
     static func fake(for wallet: Wallet) -> RealmStore {
-        RealmStore(realm: fakeRealm(wallet: wallet), name: RealmStore.threadName(for: wallet))
+        RealmStore(config: fakeRealmConfiguration(wallet: wallet), name: RealmStore.threadName(for: wallet))
     }
 }
 extension CurrencyService {
@@ -55,6 +55,7 @@ extension WalletDataProcessingPipeline {
             analytics: fas,
             transactionsStorage: transactionsDataStore,
             assetDefinitionStore: .make(),
+            fetchTokenScriptFiles: FakeFetchTokenScriptFiles(),
             transporter: FakeApiTransporter())
 
         let pipeline: TokensProcessingPipeline = WalletDataProcessingPipeline(

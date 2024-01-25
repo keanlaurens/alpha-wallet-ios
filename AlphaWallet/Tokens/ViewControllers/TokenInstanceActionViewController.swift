@@ -1,10 +1,11 @@
 // Copyright © 2018 Stormbird PTE. LTD.
 
+import Combine
 import Foundation
 import UIKit
-import Combine
-import AlphaWalletFoundation
 import AlphaWalletCore
+import AlphaWalletFoundation
+import AlphaWalletTokenScript
 import BigInt
 import PromiseKit
 
@@ -22,8 +23,10 @@ class TokenInstanceActionViewController: UIViewController, TokenVerifiableStatus
     private let session: WalletSession
     private let keystore: Keystore
     private let roundedBackground = RoundedBackground()
-    lazy private var tokenScriptRendererView: TokenInstanceWebView = {
-        let webView = TokenInstanceWebView(server: server, wallet: session.account, assetDefinitionStore: assetDefinitionStore)
+    private lazy var tokenScriptRendererView: TokenScriptWebView = {
+        //TODO pass in Config instance instead
+        let webView = TokenScriptWebView(server: server, serverWithInjectableRpcUrl: server, wallet: session.account.type, assetDefinitionStore: assetDefinitionStore, shouldPretendIsRealWallet: Config().development.shouldPretendIsRealWallet)
+        webView.backgroundColor = Configuration.Color.Semantic.defaultViewBackground
         webView.isWebViewInteractionEnabled = true
         webView.delegate = self
         webView.isStandalone = true
@@ -130,11 +133,13 @@ class TokenInstanceActionViewController: UIViewController, TokenVerifiableStatus
         button.setTitle(R.string.localizable.confirmPaymentConfirmButtonTitle(), for: .normal)
         button.addTarget(self, action: #selector(proceed), for: .touchUpInside)
 
-        tokenScriptRendererView.loadHtml(action.viewHtml(tokenId: tokenHolder.tokenIds[0]))
+        let tokenScriptView = action.viewHtml(tokenId: tokenHolder.tokenIds[0])
+        tokenScriptRendererView.loadHtml(tokenScriptView.html, urlFragment: tokenScriptView.urlFragment)
 
         //TODO this will only contain values that has been resolved and might not refresh properly when the values are 1st resolved or updated
         //TODO rename this. Not actually `existingAttributeValues`, but token attributes
         let existingAttributeValues = tokenHolder.values
+        //TODO why does this resolution not go through an XMLHandler?
         let cardLevelAttributeValues = assetDefinitionStore
             .assetAttributeResolver
             .resolve(withTokenIdOrEvent: tokenHolder.tokens[0].tokenIdOrEvent,
@@ -179,25 +184,13 @@ extension TokenInstanceActionViewController: VerifiableStatusViewController {
     }
 }
 
-extension TokenInstanceActionViewController: TokenInstanceWebViewDelegate {
-
-    func requestSignMessage(message: SignMessageType,
-                            server: RPCServer,
-                            account: AlphaWallet.Address,
-                            source: Analytics.SignMessageRequestSource,
-                            requester: RequesterViewModel?) -> AnyPublisher<Data, PromiseError> {
-
+extension TokenInstanceActionViewController: TokenScriptWebViewDelegate {
+    func requestSignMessage(message: SignMessageType, server: RPCServer, account: AlphaWallet.Address, inTokenScriptWebView tokenScriptWebView: TokenScriptWebView) -> AnyPublisher<Data, PromiseError> {
         guard let delegate = delegate else { return .empty() }
-
-        return delegate.requestSignMessage(
-            message: message,
-            server: server,
-            account: account,
-            source: source,
-            requester: requester)
+        return delegate.requestSignMessage(message: message, server: server, account: account, source: .tokenScript, requester: nil)
     }
 
-    func shouldClose(tokenInstanceWebView: TokenInstanceWebView) {
+    func shouldClose(tokenScriptWebView: TokenScriptWebView) {
         //Bit of delay to wait for the UI animation to almost finish
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
             SuccessOverlayView.show()
@@ -205,7 +198,7 @@ extension TokenInstanceActionViewController: TokenInstanceWebViewDelegate {
         delegate?.shouldCloseFlow(inViewController: self)
     }
 
-    func reinject(tokenInstanceWebView: TokenInstanceWebView) {
+    func reinject(tokenScriptWebView: TokenScriptWebView) {
         configure()
     }
 }

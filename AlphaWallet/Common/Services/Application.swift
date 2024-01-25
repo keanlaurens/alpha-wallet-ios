@@ -44,6 +44,7 @@ class Application: WalletDependenciesProvidable {
     private let donationUserActivityHandler: DonationUserActivityHandler
     private let systemSettingsRequestableDelegate: SystemSettingsRequestableDelegate
     private let notificationHandler: NotificationHandler
+    private let name: String
 
     let config: Config
     let legacyFileBasedKeystore: LegacyFileBasedKeystore
@@ -83,8 +84,11 @@ class Application: WalletDependenciesProvidable {
 
     static let shared: Application = try! Application()
 
-    convenience init() throws {
-        crashlytics.register(AlphaWallet.FirebaseCrashlyticsReporter.instance)
+    convenience init(name: String = "Default") throws {
+        Task {
+            //This could a problem if this is not completed soon enough. Maybe not so bad because they are *all* actor-isolated, so serialized. Just crashes early (as in crash handling) would be a problem
+            await crashlytics.register(AlphaWallet.FirebaseCrashlyticsReporter.instance)
+        }
 
         let analytics = AnalyticsService()
         let walletAddressesStore: WalletAddressesStore = EtherKeystore.migratedWalletAddressesStore(userDefaults: .standardOrForTests)
@@ -106,12 +110,8 @@ class Application: WalletDependenciesProvidable {
     }
 
     // swiftlint:disable function_body_length
-    init(analytics: AnalyticsServiceType,
-         keystore: Keystore,
-         securedStorage: SecuredPasswordStorage & SecuredStorage,
-         legacyFileBasedKeystore: LegacyFileBasedKeystore,
-         config: Config = Config()) {
-
+    init(name: String = "Default", analytics: AnalyticsServiceType, keystore: Keystore, securedStorage: SecuredPasswordStorage & SecuredStorage, legacyFileBasedKeystore: LegacyFileBasedKeystore, config: Config = Config()) {
+        self.name = name
         self.config = config
         let addressStorage = FileAddressStorage()
         AlphaWalletAddress.register(addressStorage: addressStorage)
@@ -139,7 +139,9 @@ class Application: WalletDependenciesProvidable {
         let tokenScriptFeatures = TokenScriptFeatures()
         Self.copyFeatures(Features.current, toTokenScriptFeatures: tokenScriptFeatures)
         self.tokenScriptFeatures = tokenScriptFeatures
-        self.assetDefinitionStore = AssetDefinitionStore(baseTokenScriptFiles: TokenScript.baseTokenScriptFiles, networkService: networkService, blockchainsProvider: blockchainsProvider, features: tokenScriptFeatures)
+        self.assetDefinitionStore = AssetDefinitionStore(baseTokenScriptFiles: TokenScript.baseTokenScriptFiles, networkService: networkService, blockchainsProvider: blockchainsProvider, features: tokenScriptFeatures, resetFolders: !config.haveMergedAttestationAndTokenTokenScriptFoldersV1)
+        var config = config
+        config.haveMergedAttestationAndTokenTokenScriptFoldersV1 = true
 
         self.coinTickers = CoinTickers(
             transporter: BaseApiTransporter(),
@@ -251,10 +253,12 @@ class Application: WalletDependenciesProvidable {
                     guard let session = dep.sessionsProvider.session(for: override.server) else { return }
                     session.importToken.importToken(for: override.contract, onlyIfThereIsABalance: false)
                         .sinkAsync(receiveCompletion: { result in
-                            guard case .failure(let error) = result else { return }
-                            debugLog("Error while adding imported token contract: \(override.contract.eip55String) server: \(override.server) wallet: \(wallet.address.eip55String) error: \(error)")
+                            if case .failure(let error) = result {
+                                debugLog("Error while adding imported token contract: \(override.contract.eip55String) server: \(override.server) wallet: \(wallet.address.eip55String) error: \(error)")
+                            }
                         })
                     if !override.destinationFileInUse {
+                        //This does work, but only for AirDrop on device, not with drag and drop in Finder on simulator
                         strongSelf.navigation?.showTokenScriptFileImported(filename: override.filename)
                     }
                 }
@@ -435,13 +439,13 @@ class Application: WalletDependenciesProvidable {
 
         sessionsProvider.start()
 
-        let tokensService = AlphaWalletTokensService(
-            sessionsProvider: sessionsProvider,
-            tokensDataStore: tokensDataStore,
-            analytics: analytics,
-            transactionsStorage: transactionsDataStore,
+        let fetchTokenScriptFiles = FetchTokenScriptFilesImpl(
+            wallet: wallet,
             assetDefinitionStore: assetDefinitionStore,
-            transporter: BaseApiTransporter())
+            tokensDataStore: tokensDataStore,
+            sessionsProvider: sessionsProvider)
+
+        let tokensService = AlphaWalletTokensService(sessionsProvider: sessionsProvider, tokensDataStore: tokensDataStore, analytics: analytics, transactionsStorage: transactionsDataStore, assetDefinitionStore: assetDefinitionStore, fetchTokenScriptFiles: fetchTokenScriptFiles, transporter: BaseApiTransporter())
 
         let tokensPipeline: TokensProcessingPipeline = WalletDataProcessingPipeline(
             wallet: wallet,

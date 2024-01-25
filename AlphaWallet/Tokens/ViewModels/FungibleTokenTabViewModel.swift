@@ -23,24 +23,19 @@ class FungibleTokenTabViewModel {
     private let assetDefinitionStore: AssetDefinitionStore
     private var cancelable = Set<AnyCancellable>()
     private let tokensService: TokensService
-    lazy var tokenScriptFileStatusHandler = XMLHandler(token: token, assetDefinitionStore: assetDefinitionStore)
+    lazy var tokenScriptFileStatusHandler = assetDefinitionStore.xmlHandler(forTokenScriptSupportable: token)
 
     let session: WalletSession
     let tabBarItems: [TabBarItem]
 
-    init(token: Token,
-         session: WalletSession,
-         tokensPipeline: TokensProcessingPipeline,
-         assetDefinitionStore: AssetDefinitionStore,
-         tokensService: TokensService) {
-
+    init(token: Token, session: WalletSession, tokensPipeline: TokensProcessingPipeline, assetDefinitionStore: AssetDefinitionStore, tokensService: TokensService) async {
         self.tokensService = tokensService
         self.tokensPipeline = tokensPipeline
         self.assetDefinitionStore = assetDefinitionStore
         self.token = token
         self.session = session
 
-        let hasTicker = tokensPipeline.tokenViewModel(for: token)?.balance.ticker != nil
+        let hasTicker = await tokensPipeline.tokenViewModel(for: token)?.balance.ticker != nil
 
         if Features.current.isAvailable(.isAlertsEnabled) && hasTicker {
             tabBarItems = [.details, .activities, .alerts]

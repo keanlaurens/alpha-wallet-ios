@@ -13,6 +13,7 @@ import AlphaWalletWeb3
 import APIKit
 import BigInt
 import JSONRPCKit
+import PromiseKit
 
 public protocol BlockchainProvider: BlockchainCallable {
     var server: RPCServer { get }
@@ -23,8 +24,8 @@ public protocol BlockchainProvider: BlockchainCallable {
     func call(from: AlphaWallet.Address?, to: AlphaWallet.Address?, value: String?, data: String) -> AnyPublisher<String, SessionTaskError>
     func transaction(byHash hash: String) -> AnyPublisher<EthereumTransaction?, SessionTaskError>
     func nextNonce(wallet: AlphaWallet.Address) -> AnyPublisher<Int, SessionTaskError>
-    func block(by blockNumber: BigUInt) -> AnyPublisher<Block, SessionTaskError>
-    func eventLogs(contractAddress: AlphaWallet.Address, eventName: String, abiString: String, filter: EventFilter) -> AnyPublisher<[EventParserResultProtocol], SessionTaskError>
+    func block(by blockNumber: BigUInt) async throws -> Block
+    func eventLogs(contractAddress: AlphaWallet.Address, eventName: String, abiString: String, filter: EventFilter) async throws -> [EventParserResultProtocol]
     func gasEstimates() -> AnyPublisher<LegacyGasEstimates, PromiseError>
     func gasLimit(wallet: AlphaWallet.Address, value: BigUInt, toAddress: AlphaWallet.Address?, data: Data) -> AnyPublisher<BigUInt, SessionTaskError>
     func send(rawTransaction: String) -> AnyPublisher<String, SessionTaskError>
@@ -33,6 +34,30 @@ public protocol BlockchainProvider: BlockchainCallable {
 }
 
 public final class RpcBlockchainProvider: BlockchainProvider {
+    //TODO move block number fetching support code?
+    private enum BlockNumbers {
+        static var lastFetchedBlockTimes = [RPCServer: (blockNumber: Int, fetchedTime: Date)]()
+        static var inflightBlockTimesFetchers: [RPCServer: PassthroughSubject<Int, SessionTaskError>] = .init()
+        static let averageBlockTimes: [RPCServer: TimeInterval] = [
+            //TODO should we move these numbers one of the RPCServer definitions? Or is more suitable here?
+            //Those that are very low (~1s) are set to 2s to reduce unnecessary RPC node requests
+            .main: 12,
+            .sepolia: 12,
+            .xDai: 5,
+            .binance_smart_chain: 13,
+            .heco: 3,
+            .polygon: 2,
+            .optimistic: 2,
+            .arbitrum: 2,
+            .avalanche: 2,
+            .avalanche_testnet: 2,
+            .mumbai_testnet: 2,
+            .optimismGoerli: 2,
+        ]
+        //Not too low to avoid unnecessary RPC node requests
+        static let fallBackAverageBlockTime: TimeInterval = 60
+    }
+
     private let getEventLogs: GetEventLogs
     private let analytics: AnalyticsLogger
     private let config: Config = Config()
@@ -94,10 +119,28 @@ public final class RpcBlockchainProvider: BlockchainProvider {
             .eraseToAnyPublisher()
     }
 
-    public func blockNumber() -> AnyPublisher<Int, SessionTaskError> {
-        let request = EtherServiceRequest(server: server, batch: BatchFactory().create(BlockNumberRequest()))
+    public func callAsync<R: ContractMethodCall>(_ method: R, block: BlockParameter) async throws -> R.Response {
+        let response = try await callSmartContractAsync(withServer: server, contract: method.contract, functionName: method.name, abiString: method.abi, parameters: method.parameters)
+        return try method.response(from: response)
+    }
 
-        return APIKitSession.sendPublisher(request, server: server, analytics: analytics)
+    public func blockNumber() -> AnyPublisher<Int, SessionTaskError> {
+        if let inflight = BlockNumbers.inflightBlockTimesFetchers[server] {
+            return inflight.eraseToAnyPublisher()
+        }
+        if let (blockNumber, fetchedTime) = BlockNumbers.lastFetchedBlockTimes[server], Date().timeIntervalSince(fetchedTime) < (BlockNumbers.averageBlockTimes[server, default: BlockNumbers.fallBackAverageBlockTime]) {
+            return Just(blockNumber).setFailureType(to: SessionTaskError.self).eraseToAnyPublisher()
+        }
+        let inflight = PassthroughSubject<Int, SessionTaskError>()
+        BlockNumbers.inflightBlockTimesFetchers[server] = inflight
+        let request = EtherServiceRequest(server: server, batch: BatchFactory().create(BlockNumberRequest()))
+        let result = APIKitSession.sendPublisher(request, server: server, analytics: analytics)
+        return result.handleEvents(receiveOutput: { [server] response in
+                    inflight.send(response)
+                    BlockNumbers.lastFetchedBlockTimes[server] = (blockNumber: response, fetchedTime: Date())
+                    verboseLog("Fetched block number server: \(server) number: \(response)")
+                    BlockNumbers.inflightBlockTimesFetchers[server] = nil
+        }).eraseToAnyPublisher()
     }
 
     public func transactionReceipt(hash: String) -> AnyPublisher<TransactionReceipt, SessionTaskError> {
@@ -112,10 +155,9 @@ public final class RpcBlockchainProvider: BlockchainProvider {
         return APIKitSession.sendPublisher(request, server: server, analytics: analytics)
     }
 
-    public func block(by blockNumber: BigUInt) -> AnyPublisher<Block, SessionTaskError> {
+    public func block(by blockNumber: BigUInt) async throws -> Block {
         let request = EtherServiceRequest(server: server, batch: BatchFactory().create(BlockByNumberRequest(number: blockNumber)))
-
-        return APIKitSession.sendPublisher(request, server: server, analytics: analytics)
+        return try await APIKitSession.sendPublisherAsync(request, server: server, analytics: analytics)
     }
 
     public func feeHistory(blockCount: Int, block: BlockParameter, rewardPercentile: [Int]) -> AnyPublisher<FeeHistory, SessionTaskError> {
@@ -125,11 +167,16 @@ public final class RpcBlockchainProvider: BlockchainProvider {
         return APIKitSession.sendPublisher(request, server: server, analytics: analytics)
     }
 
-    public func eventLogs(contractAddress: AlphaWallet.Address, eventName: String, abiString: String, filter: EventFilter) -> AnyPublisher<[EventParserResultProtocol], SessionTaskError> {
-        getEventLogs.getEventLogs(contractAddress: contractAddress, server: server, eventName: eventName, abiString: abiString, filter: filter)
-            .publisher()
-            .mapError { SessionTaskError.responseError($0.embedded) }
-            .eraseToAnyPublisher()
+    public func eventLogs(contractAddress: AlphaWallet.Address, eventName: String, abiString: String, filter: EventFilter) async throws -> [EventParserResultProtocol] {
+        return try await withCheckedThrowingContinuation { continuation in
+            firstly {
+                getEventLogs.getEventLogs(contractAddress: contractAddress, server: server, eventName: eventName, abiString: abiString, filter: filter)
+            }.done { result in
+                continuation.resume(returning: result)
+            }.catch {
+                continuation.resume(throwing: $0)
+            }
+        }
     }
 
     public func gasEstimates() -> AnyPublisher<LegacyGasEstimates, PromiseError> {

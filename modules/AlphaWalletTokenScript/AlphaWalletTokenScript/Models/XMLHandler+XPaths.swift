@@ -2,6 +2,7 @@
 
 import Foundation
 import AlphaWalletAddress
+import AlphaWalletAttestation
 import AlphaWalletCore
 import BigInt
 import Kanna
@@ -55,6 +56,26 @@ extension XMLHandler {
 
     static func getAttributeElements(fromAttributeElement element: XMLElement, xmlContext: XmlContext) -> XPathObject {
         return element.xpath("attribute".addToXPath(namespacePrefix: xmlContext.namespacePrefix), namespaces: xmlContext.namespaces)
+    }
+
+    static func getAttestationAttributeElements(fromAttributeElement element: XMLElement, xmlContext: XmlContext) -> XPathObject {
+        return element.xpath("attestation/meta/attributeField".addToXPath(namespacePrefix: xmlContext.namespacePrefix), namespaces: xmlContext.namespaces)
+    }
+
+    static func getAttestationCollectionFieldElements(fromAttributeElement element: XMLElement, xmlContext: XmlContext) -> XPathObject {
+        return element.xpath("attestation/collectionFields/collectionField".addToXPath(namespacePrefix: xmlContext.namespacePrefix), namespaces: xmlContext.namespaces)
+    }
+
+    static func getAttestationIdFieldElements(fromAttributeElement element: XMLElement, xmlContext: XmlContext) -> XPathObject {
+        return element.xpath("attestation/idFields/idField".addToXPath(namespacePrefix: xmlContext.namespacePrefix), namespaces: xmlContext.namespaces)
+    }
+
+    static func getAttestationIssuerKey(fromAttributeElement element: XMLElement, xmlContext: XmlContext) -> String? {
+        return element.at_xpath("attestation/key".addToXPath(namespacePrefix: xmlContext.namespacePrefix), namespaces: xmlContext.namespaces)?.text?.trimmed
+    }
+
+    static func getAttestationSchemaUid(fromAttributeElement element: XMLElement, xmlContext: XmlContext) -> Attestation.SchemaUid? {
+        return element.at_xpath("attestation/eas".addToXPath(namespacePrefix: xmlContext.namespacePrefix), namespaces: xmlContext.namespaces)?["schemaUID"].flatMap { Attestation.SchemaUid(value: $0) }
     }
 
     static func getActionCardAttributeElements(fromRoot root: XMLDocument, xmlContext: XmlContext) -> XPathObject {
@@ -158,6 +179,20 @@ extension XMLHandler {
         }
     }
 
+    static func getAttestationElement(fromRoot root: XMLDocument, xmlContext: XmlContext) -> XMLElement? {
+        return root.at_xpath("/token/attestation".addToXPath(namespacePrefix: xmlContext.namespacePrefix), namespaces: xmlContext.namespaces)
+    }
+
+    static func getAttestationNameElement(fromAttestationElement element: XMLElement?, xmlContext: XmlContext) -> XMLElement? {
+        guard let attestationElement = element else { return nil }
+        return attestationElement.at_xpath("meta/name".addToXPath(namespacePrefix: xmlContext.namespacePrefix), namespaces: xmlContext.namespaces)
+    }
+
+    static func getAttestationDescriptionElement(fromAttestationElement element: XMLElement?, xmlContext: XmlContext) -> XMLElement? {
+        guard let attestationElement = element else { return nil }
+        return attestationElement.at_xpath("meta/description".addToXPath(namespacePrefix: xmlContext.namespacePrefix), namespaces: xmlContext.namespaces)
+    }
+
     static func getDenialString(fromElement element: XMLElement?, xmlContext: XmlContext) -> XMLElement? {
         guard let element = element else { return nil }
         if let tag = element.at_xpath("denial/string[@xml:lang='\(xmlContext.lang)']".addToXPath(namespacePrefix: xmlContext.namespacePrefix), namespaces: xmlContext.namespaces) {
@@ -237,10 +272,24 @@ extension XMLHandler {
         return ethereumFunctionElement.at_xpath("ethereum:to", namespaces: xmlContext.namespaces)?.text.flatMap { AlphaWallet.Address(string: $0.trimmed) }
     }
 
-    static func getTokenScriptTokenViewContents(fromViewElement element: XMLElement, xmlContext: XmlContext, xhtmlNamespacePrefix: String) -> (style: String, script: String, body: String) {
-        let styleElements = element.xpath("style".addToXPath(namespacePrefix: xhtmlNamespacePrefix), namespaces: xmlContext.namespaces)
-        let scriptElements = element.xpath("script".addToXPath(namespacePrefix: xhtmlNamespacePrefix), namespaces: xmlContext.namespaces)
-        let bodyElements = element.xpath("body".addToXPath(namespacePrefix: xhtmlNamespacePrefix), namespaces: xmlContext.namespaces)
+    static func getTokenScriptTokenViewContents(fromViewElement element: XMLElement, cardElements: XMLElement, xmlContext: XmlContext, xhtmlNamespacePrefix: String) -> (style: String, script: String, body: String, urlFragment: String?) {
+        let viewContentElement: XMLElement?
+        let urlFragment = element["urlFragment"]
+        if let viewContentName = element.at_xpath("ts:viewContent", namespaces: xmlContext.namespaces)?["name"] {
+            let p = xmlContext.namespacePrefix
+            viewContentElement = cardElements.at_xpath("\(p)viewContent[@name=\"\(viewContentName)\"]", namespaces: xmlContext.namespaces)
+        } else {
+            viewContentElement = nil
+        }
+        let styleElements = element.xpath("style".addToXPath(namespacePrefix: xhtmlNamespacePrefix), namespaces: xmlContext.namespaces).defaultIfEmpty {
+            return viewContentElement?.xpath("style".addToXPath(namespacePrefix: xhtmlNamespacePrefix), namespaces: xmlContext.namespaces)
+        }
+        let scriptElements = element.xpath("script".addToXPath(namespacePrefix: xhtmlNamespacePrefix), namespaces: xmlContext.namespaces).defaultIfEmpty {
+            return viewContentElement?.xpath("script".addToXPath(namespacePrefix: xhtmlNamespacePrefix), namespaces: xmlContext.namespaces)
+        }
+        let bodyElements = element.xpath("body".addToXPath(namespacePrefix: xhtmlNamespacePrefix), namespaces: xmlContext.namespaces).defaultIfEmpty {
+            return viewContentElement?.xpath("body".addToXPath(namespacePrefix: xhtmlNamespacePrefix), namespaces: xmlContext.namespaces)
+        }
         let style: String
         let script: String
         let body: String
@@ -265,7 +314,11 @@ extension XMLHandler {
         } else {
             body = ""
         }
-        return (style: style, script: script, body: body)
+        return (style: style, script: script, body: body, urlFragment: urlFragment)
+    }
+
+    static func getTokenScriptCardsElement(fromRoot root: XMLDocument, xmlContext: XmlContext) -> XMLElement? {
+       return root.at_xpath("/token/cards".addToXPath(namespacePrefix: xmlContext.namespacePrefix), namespaces: xmlContext.namespaces)
     }
 
     static func getTokenScriptTokenItemViewHtmlElement(fromRoot root: XMLDocument, xmlContext: XmlContext) -> XMLElement? {
@@ -312,5 +365,17 @@ extension XMLHandler {
 
     static func getContractElements(fromRoot root: XMLDocument, xmlContext: XmlContext) -> XPathObject {
         return root.xpath("/token/contract".addToXPath(namespacePrefix: xmlContext.namespacePrefix), namespaces: xmlContext.namespaces)
+    }
+}
+
+extension XPathObject {
+    func defaultIfEmpty(_ block: () -> XPathObject?) -> XPathObject {
+        // swiftlint:disable empty_count
+        if count == 0 {
+            // swiftlint:enable empty_count
+            return block() ?? self
+        } else {
+            return self
+        }
     }
 }

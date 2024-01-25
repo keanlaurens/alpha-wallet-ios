@@ -21,7 +21,6 @@ final class JsonFromTokenUri {
     private let getTokenUri: NonFungibleContract
     private let blockchainProvider: BlockchainProvider
     private var inFlightPublishers: [String: Publisher] = [:]
-    private let queue = DispatchQueue(label: "org.alphawallet.swift.jsonFromTokenUri")
     //Unlike `SessionManager.default`, this doesn't add default HTTP headers. It looks like POAP token URLs (e.g. https://api.poap.xyz/metadata/2503/278569) don't like them and return `406` in the JSON. It's strangely not responsible when curling, but only when running in the app
     private let transporter: ApiTransporter
     private let uriMapper: TokenUriMapper
@@ -41,7 +40,11 @@ final class JsonFromTokenUri {
         ])
     }
 
-    func clear() {
+    deinit {
+        clear()
+    }
+
+    private func clear() {
         inFlightPublishers.removeAll()
     }
 
@@ -50,9 +53,8 @@ final class JsonFromTokenUri {
                                address: AlphaWallet.Address) -> Publisher {
 
         return Just(tokenId)
-            .receive(on: queue)
             .setFailureType(to: SessionTaskError.self)
-            .flatMap { [weak self, queue, weak getTokenUri] tokenId -> AnyPublisher<NonFungibleBalanceAndItsSource<JsonString>, SessionTaskError> in
+            .flatMap { [weak self, weak getTokenUri] tokenId -> AnyPublisher<NonFungibleBalanceAndItsSource<JsonString>, SessionTaskError> in
                 guard let strongSelf = self, let getTokenUri = getTokenUri else { return .empty() }
                 let key = "\(tokenId).\(address.eip55String).\(tokenType.rawValue)"
 
@@ -60,7 +62,6 @@ final class JsonFromTokenUri {
                     return publisher
                 } else {
                     let publisher = getTokenUri.getUriOrTokenUri(for: tokenId, contract: address)
-                        .receive(on: queue)
                         .flatMap { strongSelf.handleUriData(data: $0, tokenId: tokenId, tokenType: tokenType, address: address) }
                         .catch { _ in return strongSelf.generateTokenJsonFallback(for: tokenId, tokenType: tokenType, address: address) }
                         .handleEvents(receiveCompletion: { _ in strongSelf.inFlightPublishers[key] = .none })
@@ -74,11 +75,7 @@ final class JsonFromTokenUri {
             }.eraseToAnyPublisher()
     }
 
-    private func handleUriData(data: TokenUriData,
-                               tokenId: String,
-                               tokenType: NonFungibleFromJsonTokenType,
-                               address: AlphaWallet.Address) -> Publisher {
-
+    private func handleUriData(data: TokenUriData, tokenId: String, tokenType: NonFungibleFromJsonTokenType, address: AlphaWallet.Address) -> Publisher {
         switch data {
         case .uri(let uri):
             let uri = uriMapper.map(uri: uri) ?? uri
@@ -86,47 +83,45 @@ final class JsonFromTokenUri {
         case .string(let str):
             return generateTokenJsonFallback(for: tokenId, tokenType: tokenType, address: address)
         case .json(let json):
-            do {
-                let value = try fulfill(json: json, tokenId: tokenId, tokenType: tokenType, uri: nil, address: address)
-                return .just(value)
-            } catch {
-                return .fail(SessionTaskError(error: error))
-            }
+            return asFutureThrowable {
+                do {
+                    return try await self.fulfill(json: json, tokenId: tokenId, tokenType: tokenType, uri: nil, address: address)
+                } catch {
+                    throw SessionTaskError(error: error)
+                }
+            }.mapError { SessionTaskError(error: $0) }.eraseToAnyPublisher()
         case .data(let data):
             return generateTokenJsonFallback(for: tokenId, tokenType: tokenType, address: address)
         }
     }
 
-    private func generateTokenJsonFallback(for tokenId: String,
-                                           tokenType: NonFungibleFromJsonTokenType,
-                                           address: AlphaWallet.Address) -> Publisher {
-        var jsonDictionary = JSON()
-        if let token = tokensDataStore.token(for: address, server: blockchainProvider.server) {
-            jsonDictionary["tokenId"] = JSON(tokenId)
-            jsonDictionary["tokenType"] = JSON(tokenType.rawValue)
-            jsonDictionary["contractName"] = JSON(token.name)
-            jsonDictionary["decimals"] = JSON(0)
-            jsonDictionary["symbol"] = JSON(token.symbol)
-            jsonDictionary["name"] = ""
-            jsonDictionary["imageUrl"] = ""
-            jsonDictionary["thumbnailUrl"] = ""
-            jsonDictionary["externalLink"] = ""
-            jsonDictionary["animationUrl"] = ""
+    private func generateTokenJsonFallback(for tokenId: String, tokenType: NonFungibleFromJsonTokenType, address: AlphaWallet.Address) -> Publisher {
+        let subject = PassthroughSubject<NonFungibleBalanceAndItsSource<JsonString>, SessionTaskError>()
+        Task { @MainActor in
+            var jsonDictionary = JSON()
+            if let token = await tokensDataStore.token(for: address, server: blockchainProvider.server) {
+                jsonDictionary["tokenId"] = JSON(tokenId)
+                jsonDictionary["tokenType"] = JSON(tokenType.rawValue)
+                jsonDictionary["contractName"] = JSON(token.name)
+                jsonDictionary["decimals"] = JSON(0)
+                jsonDictionary["symbol"] = JSON(token.symbol)
+                jsonDictionary["name"] = ""
+                jsonDictionary["imageUrl"] = ""
+                jsonDictionary["thumbnailUrl"] = ""
+                jsonDictionary["externalLink"] = ""
+                jsonDictionary["animationUrl"] = ""
+            }
+            let json = jsonDictionary.rawString()!
+            subject.send(.init(tokenId: tokenId, value: json, source: .fallback))
         }
-        let json = jsonDictionary.rawString()!
-        return .just(.init(tokenId: tokenId, value: json, source: .fallback))
+        return subject.eraseToAnyPublisher()
     }
 
     struct JsonFromTokenUriError: Swift.Error {
         let message: String
     }
 
-    private func fulfill(json: JSON,
-                         tokenId: String,
-                         tokenType: NonFungibleFromJsonTokenType,
-                         uri originalUri: URL?,
-                         address: AlphaWallet.Address) throws -> NonFungibleBalanceAndItsSource<JsonString> {
-
+    private func fulfill(json: JSON, tokenId: String, tokenType: NonFungibleFromJsonTokenType, uri originalUri: URL?, address: AlphaWallet.Address) async throws -> NonFungibleBalanceAndItsSource<JsonString> {
         if let errorMessage = json["error"].string {
             warnLog("Fetched token URI: \(originalUri?.absoluteString) error: \(errorMessage)")
         }
@@ -137,7 +132,7 @@ final class JsonFromTokenUri {
             verboseLog("Fetched token URI: \(originalUri?.absoluteString)")
 
             var jsonDictionary = json
-            if let token = tokensDataStore.token(for: address, server: blockchainProvider.server) {
+            if let token = await tokensDataStore.token(for: address, server: blockchainProvider.server) {
                 jsonDictionary["tokenType"] = JSON(tokenType.rawValue)
                     //We must make sure the value stored is at least an empty string, never nil because we need to deserialise/decode it
                 jsonDictionary["contractName"] = JSON(token.name)
@@ -168,23 +163,19 @@ final class JsonFromTokenUri {
 
         let uri = originalUri.rewrittenIfIpfs
         verboseLog("Fetching token URI: \(originalUri.absoluteString)… with: \(uri.absoluteString)")
-
-        return transporter
-            .dataPublisher(UrlRequest(url: uri))
-            .receive(on: queue)
-            .flatMap { response -> Publisher in
-                if let data = response.data, let json = try? JSON(data: data) {
-                    do {
-                        return .just(try self.fulfill(json: json, tokenId: tokenId, tokenType: tokenType, uri: uri, address: address))
-                    } catch {
-                        return .fail(.responseError(error))
-                    }
-                } else {
-                    return .fail(.responseError(JsonFromTokenUriError(message: "Decode json failure for: \(tokenId) \(address) \(originalUri)")))
+        return asFutureThrowable {
+            let response = try await self.transporter.dataTask(UrlRequest(url: uri))
+            if let json = try? JSON(data: response.data) {
+                do {
+                    return try await self.fulfill(json: json, tokenId: tokenId, tokenType: tokenType, uri: uri, address: address)
+                } catch {
+                    verboseLog("Fetching token URI: \(originalUri) error: \(error)")
+                    throw SessionTaskError.responseError(error)
                 }
-            }.handleEvents(receiveCompletion: { result in
-                guard case .failure(let error) = result else { return }
-                verboseLog("Fetching token URI: \(originalUri) error: \(error)")
-            }).eraseToAnyPublisher()
+            } else {
+                verboseLog("Fetching token URI: \(originalUri) error")
+                throw SessionTaskError.responseError(JsonFromTokenUriError(message: "Decode json failure for: \(tokenId) \(address) \(originalUri)"))
+            }
+        }.mapError { SessionTaskError(error: $0) }.eraseToAnyPublisher()
     }
 }

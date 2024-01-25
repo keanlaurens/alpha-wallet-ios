@@ -3,9 +3,11 @@
 import Foundation
 import BigInt
 import Combine
+import AlphaWalletCore
 import AlphaWalletTokenScript
 import AlphaWalletWeb3
 
+// swiftlint:disable type_body_length
 final class EventSource {
     typealias EventPublisher = AnyPublisher<[EventInstanceValue], Never>
 
@@ -97,8 +99,8 @@ final class EventSource {
         var tokenScriptChanged: AnyPublisher<[Token], Never> {
             assetDefinitionStore.bodyChange
                 .receive(on: queue)
-                .compactMap { [tokensService] in tokensService.token(for: $0) }
-                .compactMap { self.tokensBasedOnTokenScriptServer(token: $0) }
+                .flatMap { [tokensService] address in asFuture { await tokensService.token(for: address) } }.compactMap { $0 }
+                .flatMap { token in asFuture { await self.tokensBasedOnTokenScriptServer(token: token) } }
                 .handleEvents(receiveOutput: { [eventsDataStore] in $0.map { eventsDataStore.deleteEvents(for: $0.contractAddress) } })
                 .share()
                 .eraseToAnyPublisher()
@@ -115,14 +117,14 @@ final class EventSource {
             self.tokensService = tokensService
         }
 
-        private func tokensBasedOnTokenScriptServer(token: Token) -> [Token] {
+        private func tokensBasedOnTokenScriptServer(token: Token) async -> [Token] {
             guard let session = sessionsProvider.session(for: token.server) else { return [] }
             let xmlHandler = session.tokenAdaptor.xmlHandler(token: token)
             guard xmlHandler.hasAssetDefinition, let server = xmlHandler.server else { return [] }
             switch server {
             case .any:
                 let enabledServers = sessionsProvider.activeSessions.map { $0.key }
-                return enabledServers.compactMap { tokensService.token(for: token.contractAddress, server: $0) }
+                return await enabledServers.asyncCompactMap { server in await tokensService.token(for: token.contractAddress, server: server) }
             case .server(let server):
                 return [token]
             }
@@ -285,7 +287,9 @@ final class EventSource {
 
                 cancellable = Publishers.Merge3(initial, force, timedOrWaitForCurrent)
                     .receive(on: DispatchQueue.global())
-                    .flatMap { [eventsFetcher] in eventsFetcher.fetchEvents(token: $0.token) }
+                    .flatMap { [eventsFetcher] request in
+                        eventsFetcher.fetchEvents(token: request.token)
+                    }
                     .sink { _ in }
             }
 
@@ -315,7 +319,7 @@ final class EventSource {
             self.eventsDataStore = eventsDataStore
         }
 
-        private func getEventOriginsAndTokenIds(token: Token) -> [(eventOrigin: EventOrigin, tokenIds: [TokenId])] {
+        private func getEventOriginsAndTokenIds(token: Token) async -> [(eventOrigin: EventOrigin, tokenIds: [TokenId])] {
             guard let session = sessionsProvider.session(for: token.server) else { return [] }
 
             var cards: [(eventOrigin: EventOrigin, tokenIds: [TokenId])] = []
@@ -326,7 +330,7 @@ final class EventSource {
             for each in xmlHandler.attributesWithEventSource {
                 guard let eventOrigin = each.eventOrigin else { continue }
 
-                let tokenHolders = session.tokenAdaptor.getTokenHolders(token: token, isSourcedFromEvents: false)
+                let tokenHolders = await session.tokenAdaptor.getTokenHolders(token: token, isSourcedFromEvents: false)
                 let tokenIds = tokenHolders.flatMap { $0.tokenIds }
 
                 cards.append((eventOrigin, tokenIds))
@@ -336,37 +340,24 @@ final class EventSource {
         }
 
         func fetchEvents(token: Token) -> EventPublisher {
-            let publishers = getEventOriginsAndTokenIds(token: token)
-                .flatMap { value in
-                    value.tokenIds.map { tokenId -> EventPublisher in
+            let subject = PassthroughSubject<[EventInstanceValue], Never>()
+            Task { @MainActor in
+                let eventsAndTokenIds: [(eventOrigin: EventOrigin, tokenIds: [TokenId])] = await self.getEventOriginsAndTokenIds(token: token)
+                let all: [EventInstanceValue] = try await eventsAndTokenIds.asyncMap { (value: (eventOrigin: EventOrigin, tokenIds: [TokenId])) in
+                    let what: [EventInstanceValue] = try await value.tokenIds.asyncFlatMap { tokenId in
                         let eventOrigin = value.eventOrigin
-                        let oldEvent = eventsDataStore.getLastMatchingEventSortedByBlockNumber(
-                            for: eventOrigin.contract,
-                            tokenContract: token.contractAddress,
-                            server: token.server,
-                            eventName: eventOrigin.eventName)
-
-                        return eventFetcher
-                            .fetchEvents(tokenId: tokenId, token: token, eventOrigin: eventOrigin, oldEventBlockNumber: oldEvent?.blockNumber)
-                            .handleEvents(receiveOutput: { [eventsDataStore] in eventsDataStore.addOrUpdate(events: $0) })
-                            .replaceError(with: [])
-                            .eraseToAnyPublisher()
+                        let oldEvent = await self.eventsDataStore.getLastMatchingEventSortedByBlockNumber(for: eventOrigin.contract, tokenContract: token.contractAddress, server: token.server, eventName: eventOrigin.eventName)
+                        let events: [EventInstanceValue] = try await self.eventFetcher.fetchEvents(tokenId: tokenId, token: token, eventOrigin: eventOrigin, oldEventBlockNumber: oldEvent?.blockNumber)
+                        self.eventsDataStore.addOrUpdate(events: events)
+                        return events
                     }
-                }
-
-            return Publishers.MergeMany(publishers)
-                .collect()
-                .map { $0.flatMap { $0 } }
-                .eraseToAnyPublisher()
+                    return what
+                }.flatMap { $0 }
+                subject.send(all)
+            }
+            return subject.eraseToAnyPublisher()
         }
     }
-}
-
-extension EventSource {
-    enum functional {}
-}
-
-extension EventSource.functional {
 
     static func convertToImplicitAttribute(string: String) -> AssetImplicitAttributes? {
         let prefix = "${"
@@ -374,40 +365,6 @@ extension EventSource.functional {
         guard string.hasPrefix(prefix) && string.hasSuffix(suffix) else { return nil }
         let value = string.substring(with: prefix.count..<(string.count - suffix.count))
         return AssetImplicitAttributes(rawValue: value)
-    }
-
-    static func convertEventToDatabaseObject(_ event: EventParserResultProtocol, filterParam: [(filter: [EventFilterable], textEquivalent: String)?], eventOrigin: EventOrigin, contractAddress: AlphaWallet.Address, server: RPCServer) -> EventInstanceValue? {
-        guard let blockNumber = event.eventLog?.blockNumber else { return nil }
-        guard let logIndex = event.eventLog?.logIndex else { return nil }
-        let decodedResult = Self.convertToJsonCompatible(dictionary: event.decodedResult)
-        guard let json = decodedResult.jsonString else { return nil }
-        //TODO when TokenScript schema allows it, support more than 1 filter
-        let filterTextEquivalent = filterParam.compactMap({ $0?.textEquivalent }).first
-        let filterText = filterTextEquivalent ?? "\(eventOrigin.eventFilter.name)=\(eventOrigin.eventFilter.value)"
-
-        return EventInstanceValue(contract: eventOrigin.contract, tokenContract: contractAddress, server: server, eventName: eventOrigin.eventName, blockNumber: Int(blockNumber), logIndex: Int(logIndex), filter: filterText, json: json)
-    }
-
-    static func formFilterFrom(fromParameter parameter: EventParameter, tokenId: TokenId, filterName: String, filterValue: String, wallet: Wallet) -> (filter: [EventFilterable], textEquivalent: String)? {
-        guard parameter.name == filterName else { return nil }
-        guard let parameterType = SolidityType(rawValue: parameter.type) else { return nil }
-        let optionalFilter: (filter: AssetAttributeValueUsableAsFunctionArguments, textEquivalent: String)?
-        if let implicitAttribute = Self.convertToImplicitAttribute(string: filterValue) {
-            switch implicitAttribute {
-            case .tokenId:
-                optionalFilter = AssetAttributeValueUsableAsFunctionArguments(assetAttribute: .uint(tokenId)).flatMap { (filter: $0, textEquivalent: "\(filterName)=\(tokenId)") }
-            case .ownerAddress:
-                optionalFilter = AssetAttributeValueUsableAsFunctionArguments(assetAttribute: .address(wallet.address)).flatMap { (filter: $0, textEquivalent: "\(filterName)=\(wallet.address.eip55String)") }
-            case .label, .contractAddress, .symbol:
-                optionalFilter = nil
-            }
-        } else {
-            //TODO support things like "$prefix-{tokenId}"
-            optionalFilter = nil
-        }
-        guard let (filterValue, textEquivalent) = optionalFilter else { return nil }
-        guard let filterValueTypedForEventFilters = filterValue.coerceToArgumentTypeForEventFilter(parameterType) else { return nil }
-        return (filter: [filterValueTypedForEventFilters], textEquivalent: textEquivalent)
     }
 
     static func convertToJsonCompatible(dictionary: [String: Any]) -> [String: Any] {
@@ -428,5 +385,5 @@ extension EventSource.functional {
             }
         })
     }
-
 }
+// swiftlint:enable type_body_length

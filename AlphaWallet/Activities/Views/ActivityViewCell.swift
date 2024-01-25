@@ -1,17 +1,18 @@
 // Copyright © 2020 Stormbird PTE. LTD.
 
 import UIKit
-import BigInt
 import AlphaWalletFoundation
+import AlphaWalletTokenScript
+import BigInt
 
 class ActivityViewCell: UITableViewCell {
     private let background = UIView()
-    private (set) var tokenScriptRendererView: TokenInstanceWebView?
+    private (set) var tokenScriptRendererView: TokenScriptWebView?
     private var isFirstLoad = true
     private var viewModel: ActivityCellViewModel? {
         didSet {
             guard let tokenScriptRendererView = tokenScriptRendererView else { return }
-            
+
             if let oldValue = oldValue {
                 if oldValue.activity.id == viewModel?.activity.id {
                     //no-op
@@ -19,14 +20,14 @@ class ActivityViewCell: UITableViewCell {
                     isFirstLoad = true
                     if let server = viewModel?.activity.server {
                         //TODO make sure updating the server like this works
-                        tokenScriptRendererView.server = server
+                        tokenScriptRendererView.setServer(server, serverWithInjectableRpcUrl: server)
                     }
                 }
             } else {
                 isFirstLoad = true
                 if let server = viewModel?.activity.server {
                     //TODO make sure updating the server like this works
-                    tokenScriptRendererView.server = server
+                    tokenScriptRendererView.setServer(server, serverWithInjectableRpcUrl: server)
                 }
             }
         }
@@ -45,7 +46,7 @@ class ActivityViewCell: UITableViewCell {
         ])
     }
 
-    func setupTokenScriptRendererView(_ tokenScriptRendererView: TokenInstanceWebView) {
+    func setupTokenScriptRendererView(_ tokenScriptRendererView: TokenScriptWebView) {
         tokenScriptRendererView.translatesAutoresizingMaskIntoConstraints = false
         background.addSubview(tokenScriptRendererView)
 
@@ -70,7 +71,7 @@ class ActivityViewCell: UITableViewCell {
 
         backgroundColor = viewModel.backgroundColor
 
-        tokenScriptRendererView.loadHtml(viewModel.activity.itemViewHtml)
+        tokenScriptRendererView.loadHtml(viewModel.activity.itemViewHtml.html, urlFragment: viewModel.activity.itemViewHtml.urlFragment)
 
         let tokenAttributes = viewModel.activity.values.token
         let cardAttributes = viewModel.activity.values.card

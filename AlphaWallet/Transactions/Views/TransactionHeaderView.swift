@@ -2,6 +2,7 @@
 
 import Foundation
 import UIKit
+import AlphaWalletCore
 import AlphaWalletFoundation
 import Combine
 
@@ -88,13 +89,17 @@ struct TransactionHeaderViewModel {
             let token = MultipleChainsTokensDataStore.functional.etherToken(forServer: server)
             return tokenImageFetcher.image(token: token, size: .s300)
         }
-        guard let token = tokensService.tokenViewModel(for: contractAddress, server: server) else {
-            return .just(nil)
-        }
 
-        return tokenImageFetcher.image(token: token, size: .s300)
+        return asFuture {
+            await tokensService.tokenViewModel(for: contractAddress, server: server)
+        }.flatMap {
+            if let tokenViewModel = $0 {
+                return tokenImageFetcher.image(token: tokenViewModel, size: .s300)
+            } else {
+                return .just(nil)
+            }
+        }.eraseToAnyPublisher()
     }
-
 }
 
 class TransactionHeaderView: UIView {
@@ -106,7 +111,7 @@ class TransactionHeaderView: UIView {
         label.font = Fonts.semibold(size: 17)
         label.textColor = Configuration.Color.Semantic.defaultHeadlineText
         label.numberOfLines = 0
-        
+
         return label
     }()
 
@@ -144,7 +149,7 @@ class TransactionHeaderView: UIView {
     init() {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
-        
+
         let stackView = [
             dateLabel,
             .spacer(height: 10),

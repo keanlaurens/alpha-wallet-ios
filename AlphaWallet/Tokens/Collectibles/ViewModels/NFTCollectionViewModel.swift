@@ -10,6 +10,7 @@ import Foundation
 import BigInt
 import Combine
 import AlphaWalletFoundation
+import AlphaWalletTokenScript
 
 struct NFTCollectionViewModelInput {
     let willAppear: AnyPublisher<Void, Never>
@@ -28,7 +29,7 @@ final class NFTCollectionViewModel {
     private let tokensService: TokensProcessingPipeline
     private let nftProvider: NFTProvider
     private let config: Config
-    private (set) lazy var tokenScriptFileStatusHandler: XMLHandler = XMLHandler(token: token, assetDefinitionStore: assetDefinitionStore)
+    private (set) lazy var tokenScriptFileStatusHandler: XMLHandler = assetDefinitionStore.xmlHandler(forTokenScriptSupportable: token)
     private let tokenImageFetcher: TokenImageFetcher
 
     let activitiesService: ActivitiesServiceType
@@ -82,7 +83,9 @@ final class NFTCollectionViewModel {
     }
 
     func transform(input: NFTCollectionViewModelInput) -> NFTCollectionViewModelOutput {
-        activitiesService.start()
+        Task {
+            await activitiesService.start()
+        }
 
         tokensService.tokenHoldersPublisher(for: token)
             .assign(to: \.value, on: tokenHolders)
@@ -125,7 +128,9 @@ final class NFTCollectionViewModel {
         input.map { _ in Loadable<Void, Error>.loading }
             .delay(for: .seconds(1), scheduler: RunLoop.main)
             .handleEvents(receiveOutput: { [tokensService, token, tokenHolders] _ in
-                tokenHolders.value = tokensService.tokenHolders(for: token)
+                Task { @MainActor in
+                    tokenHolders.value = await tokensService.tokenHolders(for: token)
+                }
             })
             .map { _ in Loadable<Void, Error>.done(()) }
             .eraseToAnyPublisher()

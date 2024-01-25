@@ -49,7 +49,7 @@ class NFTAssetViewModel {
     let assetDefinitionStore: AssetDefinitionStore
 
     var previewViewType: NFTPreviewViewType {
-        switch OpenSeaBackedNonFungibleTokenHandling(token: token, assetDefinitionStore: assetDefinitionStore, tokenViewType: .viewIconified) {
+        switch OpenSeaBackedNonFungibleTokenHandling(token: token, assetDefinitionStore: assetDefinitionStore, tokenViewType: .view) {
         case .backedByOpenSea:
             return .imageView
         case .notBackedByOpenSea:
@@ -64,7 +64,7 @@ class NFTAssetViewModel {
         case .imageView:
             let assetImage = tokenHolder.assetImageUrl(tokenId: tokenId)
                 .flatMap { TokenImage(image: .url($0), isFinal: true, overlayServerIcon: nil) }
-            
+
             return .image(iconImage: .just(assetImage))
         }
     }

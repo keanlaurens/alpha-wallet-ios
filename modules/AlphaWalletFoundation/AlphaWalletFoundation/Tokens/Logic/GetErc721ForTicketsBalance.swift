@@ -6,36 +6,31 @@ import Combine
 import AlphaWalletCore
 import AlphaWalletWeb3
 
-class GetErc721ForTicketsBalance {
-    private let queue = DispatchQueue(label: "org.alphawallet.swift.getErc721ForTicketsBalance")
-    private var inFlightPublishers: [String: AnyPublisher<[String], SessionTaskError>] = [:]
+actor GetErc721ForTicketsBalance {
+    private var inFlightTasks: [String: Task<[String], Error>] = [:]
     private let blockchainProvider: BlockchainProvider
 
     init(blockchainProvider: BlockchainProvider) {
         self.blockchainProvider = blockchainProvider
     }
 
-    func getErc721ForTicketsTokenBalance(for address: AlphaWallet.Address, contract: AlphaWallet.Address) -> AnyPublisher<[String], SessionTaskError> {
-        Just(contract)
-            .receive(on: queue)
-            .setFailureType(to: SessionTaskError.self)
-            .flatMap { [weak self, queue, blockchainProvider] contract -> AnyPublisher<[String], SessionTaskError> in
-                let key = "\(address.eip55String)-\(contract.eip55String)"
+    private func setTask(_ task: Task<[String], Error>?, forKey key: String) {
+        inFlightTasks[key] = task
+    }
 
-                if let publisher = self?.inFlightPublishers[key] {
-                    return publisher
-                } else {
-                    let publisher = blockchainProvider
-                        .call(Erc721GetBalancesMethodCall(contract: contract, address: address))
-                        .receive(on: queue)
-                        .handleEvents(receiveCompletion: { _ in self?.inFlightPublishers[key] = .none })
-                        .share()
-                        .eraseToAnyPublisher()
-
-                    self?.inFlightPublishers[key] = publisher
-
-                    return publisher
-                }
-            }.eraseToAnyPublisher()
+    nonisolated func getErc721ForTicketsTokenBalance(for address: AlphaWallet.Address, contract: AlphaWallet.Address) async throws -> [String] {
+        let key = "\(address.eip55String)-\(contract.eip55String)"
+        if let task = await inFlightTasks[key] {
+            return try await task.value
+        } else {
+            let task = Task<[String], Error> {
+                let result = try await blockchainProvider
+                        .callAsync(Erc721GetBalancesMethodCall(contract: contract, address: address))
+                await setTask(nil, forKey: key)
+                return result
+            }
+            await setTask(task, forKey: key)
+            return try await task.value
+        }
     }
 }

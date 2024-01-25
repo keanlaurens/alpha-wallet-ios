@@ -4,6 +4,7 @@ import UIKit
 import Combine
 import AlphaWalletAttestation
 import AlphaWalletFoundation
+import AlphaWalletLogger
 
 protocol TokensViewControllerDelegate: AnyObject {
     func viewWillAppear(in viewController: UIViewController)
@@ -19,8 +20,11 @@ final class TokensViewController: UIViewController {
     private let appear = PassthroughSubject<Void, Never>()
     private let selection = PassthroughSubject<TokensViewModel.SelectionSource, Never>()
     private let viewModel: TokensViewModel
+    private var viewState: TokensViewModel.ViewState {
+        return viewModel.viewState
+    }
 
-    lazy private var filterView: ScrollableSegmentedControl = {
+    private lazy var filterView: ScrollableSegmentedControl = {
         let control = ScrollableSegmentedControl(cells: viewModel.filterViewModel.cells, configuration: viewModel.filterViewModel.configuration)
         control.setSelection(cellIndex: 0, animated: false)
         control.translatesAutoresizingMaskIntoConstraints = false
@@ -62,7 +66,11 @@ final class TokensViewController: UIViewController {
         let control = UIRefreshControl()
         return control
     }()
-    private (set) lazy var blockieImageView: BlockieImageView = BlockieImageView(viewSize: .init(width: 44, height: 44), imageSize: .init(width: 24, height: 24))
+    private (set) lazy var blockieImageView: BlockieImageView = {
+        let view = BlockieImageView(viewSize: .init(width: 44, height: 44), imageSize: .init(width: 24, height: 24))
+        view.isHidden = true
+        return view
+    }()
     private lazy var searchController: UISearchController = {
         let searchController = UISearchController(searchResultsController: nil)
         searchController.delegate = self
@@ -148,6 +156,7 @@ final class TokensViewController: UIViewController {
     private lazy var footerBar: ButtonsBarBackgroundView = {
         let result = ButtonsBarBackgroundView(buttonsBar: buttonsBar, separatorHeight: 0)
         result.backgroundColor = viewModel.buyButtonFooterBarBackgroundColor
+        result.isHidden = true
         return result
     }()
 
@@ -247,31 +256,36 @@ final class TokensViewController: UIViewController {
         let output = viewModel.transform(input: input)
 
         dataSource.numberOfRowsInSection
-            .sink { [weak self, viewModel] section in
-                guard viewModel.sections[section] == .tokens || viewModel.sections[section] == .collectiblePairs else { return }
-                self?.handleTokensCountChange(rows: viewModel.numberOfItems(for: section))
+            .sink { [weak self] section in
+                guard let strongSelf = self else { return }
+                guard strongSelf.viewState.sections[section] == .tokens || strongSelf.viewState.sections[section] == .collectiblePairs else { return }
+                self?.handleTokensCountChange(rows: strongSelf.viewState.numberOfItems(for: section))
             }.store(in: &cancellable)
 
         output.viewState
+            .receive(on: RunLoop.main)
+            //Throttle with a small interval so that we only handle the last value in a bursts of updates. This is because each update might have changed `TokensViewModel.filteredTokensAndSections` and we don't want to use an outdated value of it and crash
+            .throttle(for: 0.01, scheduler: RunLoop.main, latest: true)
             .sink { [weak self, weak walletSummaryView, blockieImageView, navigationItem] state in
+                infoLog("Updating Wallet tab…")
+                self?.viewModel.viewState = state
                 self?.showOrHideBackupWalletViewHolder()
 
                 walletSummaryView?.configure(viewModel: .init(walletSummary: state.summary, alignment: .center))
+                blockieImageView.isHidden = false
                 blockieImageView.set(blockieImage: state.blockiesImage)
 
                 navigationItem.title = state.title
                 self?.isConsoleButtonHidden = state.isConsoleButtonHidden
                 self?.footerBar.isHidden = state.isFooterHidden
-                self?.applySnapshot(with: state.sections, animatingDifferences: false)
+                self?.applySnapshot(with: state.viewModels, animatingDifferences: false)
             }.store(in: &cancellable)
 
         output.deletion
             .sink { [dataSource] indexPaths in
                 var snapshot = dataSource.snapshot()
-
                 let ids = indexPaths.compactMap { dataSource.itemIdentifier(for: $0) }
                 snapshot.deleteItems(ids)
-
                 dataSource.apply(snapshot, animatingDifferences: true)
             }.store(in: &cancellable)
 
@@ -305,6 +319,12 @@ final class TokensViewController: UIViewController {
                 tableView.contentInset = $0
                 tableView.scrollIndicatorInsets = $0
             }.store(in: &cancellable)
+    }
+
+    func selectTab(withFilter filter: WalletFilter) {
+        guard let signedIndex = WalletFilter.orderedTabs.firstIndex(of: filter), signedIndex >= 0 else { return }
+        let index = UInt(signedIndex)
+        apply(filter: filter, withSegmentAtSelection: .selected(index))
     }
 
     private func adjustTableViewHeaderHeightToFitContents() {
@@ -345,11 +365,11 @@ extension TokensViewController: UITableViewDelegate {
     }
 
     func tableView(_ tableView: UITableView, heightForHeaderInSection section: Int) -> CGFloat {
-        return viewModel.heightForHeaderInSection(for: section)
+        return viewState.heightForHeaderInSection(for: section)
     }
 
     func tableView(_ tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? {
-        switch viewModel.sections[section] {
+        switch viewState.sections[section] {
         case .walletSummary:
             let header: TokensViewController.GeneralTableViewSectionHeader<WalletSummaryView> = tableView.dequeueReusableHeaderFooterView()
             header.subview = walletSummaryView
@@ -363,7 +383,7 @@ extension TokensViewController: UITableViewDelegate {
             return header
         case .activeWalletSession:
             let header: ActiveWalletSessionView = tableView.dequeueReusableHeaderFooterView()
-            header.configure(viewModel: .init(count: viewModel.walletConnectSessions))
+            header.configure(viewModel: .init(count: viewState.walletConnectSessions))
             header.delegate = self
 
             return header
@@ -426,10 +446,10 @@ extension TokensViewController {
 
     private func tableHeight() -> CGFloat? {
         guard let delegate = tableView.delegate else { return nil }
-        let sectionCount = viewModel.sections.count
+        let sectionCount = viewState.sections.count
         var height: CGFloat = 0
         for sectionIndex in 0..<sectionCount {
-            let rows = viewModel.numberOfItems(for: sectionIndex)
+            let rows = viewState.numberOfItems(for: sectionIndex)
             for rowIndex in 0..<rows {
                 height += (delegate.tableView?(tableView, heightForRowAt: IndexPath(row: rowIndex, section: sectionIndex))) ?? 0
             }
@@ -501,8 +521,8 @@ extension TokensViewController {
     }
 
     private func apply(filter: WalletFilter, withSegmentAtSelection selection: ControlSelection?) {
-        let previousFilter = viewModel.filter
-        viewModel.set(filter: filter)
+        let previousFilter = viewModel.filterInUserInterface
+        viewModel.set(filterInUserInterface: filter)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [filterView] in
             //Important to update the segmented control (and hence add the segmented control back to the table) after they have been re-added to the table header through the table reload. Otherwise adding to the table header will break the animation for segmented control
@@ -547,7 +567,7 @@ extension TokensViewController: UISearchResultsUpdating {
     private func processSearchWithKeywords() {
         shouldHidePromptBackupWalletViewHolderBecauseSearchIsActive = searchController.isActive
         guard searchController.isActive else {
-            switch viewModel.filter {
+            switch viewModel.filterInUserInterface {
             case .all, .defi, .governance, .assets, .collectiblesOnly, .filter, .attestations:
                 break
             case .keyword:
@@ -622,7 +642,7 @@ extension TokensViewController {
     enum functional {}
 }
 
-extension TokensViewController.functional {
+fileprivate extension TokensViewController.functional {
     static func fixTableViewBackgroundColor(tableView: UITableView, backgroundColor: UIColor) {
         let v = UIView()
         v.backgroundColor = backgroundColor

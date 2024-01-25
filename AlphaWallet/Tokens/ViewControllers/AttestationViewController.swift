@@ -1,8 +1,11 @@
 // Copyright © 2023 Stormbird PTE. LTD.
 
+import Combine
 import UIKit
 import AlphaWalletAttestation
 import AlphaWalletFoundation
+import AlphaWalletTokenScript
+import BigInt
 
 protocol AttestationViewControllerDelegate: AnyObject, CanOpenURL {
 }
@@ -11,18 +14,69 @@ class AttestationViewController: UIViewController {
     private let containerView: ScrollableStackView = ScrollableStackView()
     private let attributesStackView = GridStackView(viewModel: .init(edgeInsets: .init(top: 0, left: 16, bottom: 15, right: 16)))
     private let attestation: Attestation
+    private let wallet: Wallet
+    private let assetDefinitionStore: AssetDefinitionStore
+    private var tokenScriptRendererView: TokenScriptWebView?
+    private var cancelable = Set<AnyCancellable>()
 
     weak var delegate: AttestationViewControllerDelegate?
 
-    init(attestation: Attestation) {
+    init(attestation: Attestation, wallet: Wallet, assetDefinitionStore: AssetDefinitionStore) {
         self.attestation = attestation
-
+        self.wallet = wallet
+        self.assetDefinitionStore = assetDefinitionStore
         super.init(nibName: nil, bundle: nil)
 
-        title = R.string.localizable.attestationsEas()
+        configure()
+        subscribeForEthereumEventChanges()
+    }
+
+    required init?(coder aDecoder: NSCoder) {
+        return nil
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        if let tokenScriptRendererView {
+            tokenScriptRendererView.stopLoading()
+        }
+    }
+
+    // swiftlint:disable function_body_length
+    private func configure() {
+        let xmlHandler = assetDefinitionStore.xmlHandler(forAttestation: attestation)
+        let tokenScriptViewHtml: String
+        let tokenScriptViewUrlFragment: String?
+        let tokenScriptViewStyle: String
+        if let xmlHandler {
+            let (html, urlFragment, style) = xmlHandler.tokenViewHtml
+            if html.isEmpty {
+                tokenScriptRendererView?.removeFromSuperview()
+                tokenScriptRendererView = nil
+                tokenScriptViewHtml = ""
+                tokenScriptViewUrlFragment = nil
+                tokenScriptViewStyle = ""
+            } else {
+                tokenScriptRendererView = functional.createTokenScriptRendererView(attestation: attestation, wallet: wallet, assetDefinitionStore: assetDefinitionStore)
+                tokenScriptViewHtml = html
+                tokenScriptViewUrlFragment = urlFragment
+                tokenScriptViewStyle = style
+            }
+        } else {
+            tokenScriptRendererView?.removeFromSuperview()
+            tokenScriptRendererView = nil
+            tokenScriptViewHtml = ""
+            tokenScriptViewUrlFragment = nil
+            tokenScriptViewStyle = ""
+        }
+
+        title = xmlHandler?.getAttestationName() ?? attestation.name
         view.backgroundColor = Configuration.Color.Semantic.searchBarBackground
 
         var subviews: [UIView] = []
+
+        if let tokenScriptRendererView {
+            subviews.append(tokenScriptRendererView)
+        }
 
         let detailsHeader = TokenInfoHeaderView()
         detailsHeader.configure(viewModel: TokenInfoHeaderViewModel(title: R.string.localizable.semifungiblesDetails()))
@@ -31,9 +85,14 @@ class AttestationViewController: UIViewController {
         let networkRow = functional.createDetailRow(title: R.string.localizable.transactionNetworkLabelTitle(), value: TokenAttributeViewModel.defaultValueAttributedString(attestation.server.name))
         subviews.append(networkRow)
 
-        let contractAddressRow = functional.createDetailRow(title: R.string.localizable.contractAddress(), value: TokenAttributeViewModel.urlValueAttributedString(attestation.verifyingContract?.truncateMiddle ?? ""))
-        subviews.append(contractAddressRow)
-        contractAddressRow.delegate = self
+        let issuerAddressRow = functional.createDetailRow(title: R.string.localizable.aWalletContentsIssuerTitle(), value: TokenAttributeViewModel.urlValueAttributedString(attestation.signer.truncateMiddle))
+        subviews.append(issuerAddressRow)
+        issuerAddressRow.delegate = self
+
+        if let xmlHandler, let description = xmlHandler.getAttestationDescription() {
+            let descriptionRow = functional.createDetailRow(title: "", value: TokenAttributeViewModel.defaultValueAttributedString(description))
+            subviews.append(descriptionRow)
+        }
 
         let attributesHeader = TokenInfoHeaderView()
         attributesHeader.configure(viewModel: TokenInfoHeaderViewModel(title: R.string.localizable.attestationsAttributes()))
@@ -41,44 +100,74 @@ class AttestationViewController: UIViewController {
 
         var attributeViews: [NonFungibleTraitView] = []
 
-        for each in attestation.data {
+        let data: [Attestation.TypeValuePair]
+        let fieldsSpecificationFromTokenScript: Bool
+        if let xmlHandler {
+            let attributes = xmlHandler.resolveAttestationAttributes(forAttestation: attestation)
+            data = attributes
+            fieldsSpecificationFromTokenScript = true
+        } else {
+            data = attestation.data
+            fieldsSpecificationFromTokenScript = false
+        }
+        for each in data {
             let attributeView = functional.createAttributeView(name: each.type.name, value: each.value.stringValue)
             attributeViews.append(attributeView)
         }
-        let dateFormatter = Date.formatter(with: "dd MMM yyyy h:mm:ss a")
-        let validFromView = functional.createAttributeView(name: R.string.localizable.attestationsValidFrom(), value: dateFormatter.string(from: attestation.time))
-        attributeViews.append(validFromView)
-        let expirationTimeString: String
-        if let expirationTime = attestation.expirationTime {
-            expirationTimeString = dateFormatter.string(from: expirationTime)
-        } else {
-            expirationTimeString = "—"
+
+        if !fieldsSpecificationFromTokenScript {
+            let dateFormatter = Date.formatter(with: "dd MMM yyyy h:mm:ss a")
+            let validFromView = functional.createAttributeView(name: R.string.localizable.attestationsValidFrom(), value: dateFormatter.string(from: attestation.time))
+            attributeViews.append(validFromView)
+            let expirationTimeString: String
+            if let expirationTime = attestation.expirationTime {
+                expirationTimeString = dateFormatter.string(from: expirationTime)
+            } else {
+                expirationTimeString = "—"
+            }
+            let validUntilView = functional.createAttributeView(name: R.string.localizable.attestationsValidUntil(), value: expirationTimeString)
+            attributeViews.append(validUntilView)
         }
-        let validUntilView = functional.createAttributeView(name: R.string.localizable.attestationsValidUntil(), value: expirationTimeString)
-        attributeViews.append(validUntilView)
 
         attributesStackView.set(subviews: attributeViews)
         subviews.append(attributesStackView)
 
+        containerView.stackView.removeAllArrangedSubviews()
+        //remove from superview to remove constraints on it. This is especially important when show the TokenScript view, then when the TokenScript is updated and the view needs to removed
+        containerView.removeFromSuperview()
         containerView.stackView.addArrangedSubviews(subviews)
         view.addSubview(containerView)
 
-        NSLayoutConstraint.activate([
-            containerView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+        var constraints: [NSLayoutConstraint] = [
             containerView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             containerView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
-            containerView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
-        ])
+            containerView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            containerView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ]
+        if let tokenScriptRendererView {
+            constraints.append(containerView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor))
+            //The actual value doesn't matter as long as it's the same
+            let dummyId: BigUInt = 0
+            let tokenScriptHtml = wrapWithHtmlViewport(html: tokenScriptViewHtml, style: tokenScriptViewStyle, forTokenId: dummyId)
+            tokenScriptRendererView.loadHtml(tokenScriptHtml, urlFragment: tokenScriptViewUrlFragment)
+            tokenScriptRendererView.updateWithAttestation(attestation, withId: dummyId)
+        }
+        NSLayoutConstraint.activate(constraints)
 
-        showIssuerKeyVerificationButton()
+        showIssuerKeyVerificationButton(xmlHandler: xmlHandler)
+    }
+    // swiftlint:enable function_body_length
+
+    private func subscribeForEthereumEventChanges() {
+        assetDefinitionStore.attestationXMLChange
+            .sink { [weak self] _ in
+                self?.configure()
+            }.store(in: &cancelable)
     }
 
-    required init?(coder aDecoder: NSCoder) {
-        return nil
-    }
-
-    private func showIssuerKeyVerificationButton() {
-        let issuerKeyVerificationButton = Self.functional.createIssuerKeyVerificationButton(isVerified: attestation.isValidAttestationIssuer)
+    private func showIssuerKeyVerificationButton(xmlHandler: XMLHandler?) {
+        let verificationStatus: AttestationVerificationStatus = computeVerificationStatus(forAttestation: attestation, xmlHandler: xmlHandler)
+        let issuerKeyVerificationButton = Self.functional.createIssuerKeyVerificationButton(verificationStatus: verificationStatus)
         self.navigationItem.rightBarButtonItem = UIBarButtonItem(customView: issuerKeyVerificationButton)
     }
 
@@ -106,21 +195,27 @@ fileprivate extension AttestationViewController.functional {
         return view
     }
 
-    static func createIssuerKeyVerificationButton(isVerified: Bool) -> UIButton {
+    static func createIssuerKeyVerificationButton(verificationStatus: AttestationVerificationStatus) -> UIButton {
         let title: String
         let image: UIImage?
         let tintColor: UIColor
         let button = UIButton(type: .system)
-        if isVerified {
+        switch verificationStatus {
+        case .trustedIssuer:
             //TODO localize
             title = "Trusted issuer"
             image = R.image.verified()
             tintColor = Configuration.Color.Semantic.textFieldContrastText
-        } else {
+        case .untrustedIssuer:
             //TODO localize
             title = "Not trusted"
             image = R.image.unverified()
             tintColor = Configuration.Color.Semantic.defaultErrorText
+        case .tokenScriptHasMatchingIssuer:
+            //TODO localize
+            title = ""
+            image = nil
+            tintColor = Configuration.Color.Semantic.textFieldContrastText
         }
         button.setTitle(title, for: .normal)
         button.setImage(image?.withRenderingMode(.alwaysOriginal), for: .normal)
@@ -131,6 +226,15 @@ fileprivate extension AttestationViewController.functional {
         button.imageEdgeInsets = .init(top: 0, left: 0, bottom: 0, right: 12)
         button.titleEdgeInsets = .init(top: 0, left: 0, bottom: 0, right: -12)
         return button
+    }
+
+    static func createTokenScriptRendererView(attestation: Attestation, wallet: Wallet, assetDefinitionStore: AssetDefinitionStore) -> TokenScriptWebView {
+        let webView = TokenScriptWebView(server: attestation.server, serverWithInjectableRpcUrl: attestation.server, wallet: wallet.type, assetDefinitionStore: assetDefinitionStore)
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        webView.backgroundColor = Configuration.Color.Semantic.defaultViewBackground
+        //TODO implement delegate if we need to use it
+        //webView.delegate = self
+        return webView
     }
 }
 

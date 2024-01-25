@@ -5,13 +5,15 @@
 //  Copyright © 2018 Alpha-Wallet. All rights reserved.
 //
 
-import Foundation
-import UIKit
-import SafariServices
-import MessageUI
-import BigInt
 import Combine
+import Foundation
+import MessageUI
+import SafariServices
+import UIKit
 import AlphaWalletFoundation
+import AlphaWalletLogger
+import AlphaWalletTokenScript
+import BigInt
 
 protocol NFTCollectionCoordinatorDelegate: AnyObject, CanOpenURL {
     func didClose(in coordinator: NFTCollectionCoordinator)
@@ -102,6 +104,8 @@ class NFTCollectionCoordinator: NSObject, Coordinator {
     }
 
     func start() {
+        let (html, urlFragment, style) = rootViewController.viewModel.tokenScriptFileStatusHandler.tokenViewHtml
+        infoLog("[TokenScript] Display token: \(token.contractAddress) has TokenScript: \(rootViewController.viewModel.tokenScriptFileStatusHandler.hasAssetDefinition) view: \(html.count) urlFragment: \(String(describing: urlFragment)) style: \(style.count)")
         navigationController.pushViewController(rootViewController, animated: true)
     }
 

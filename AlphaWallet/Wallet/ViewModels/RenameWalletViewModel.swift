@@ -7,6 +7,8 @@
 
 import Foundation
 import Combine
+import AlphaWalletCore
+import AlphaWalletENS
 import AlphaWalletFoundation
 
 struct RenameWalletViewModelInput {
@@ -38,11 +40,9 @@ final class RenameWalletViewModel {
 
         let assignedName = input.willAppear.map { _ in FileWalletStorage().name(for: self.account) }
 
-        let resolvedEns = domainResolutionService.reverseResolveDomainName(address: account, server: RPCServer.forResolvingDomainNames)
-            .map { ens -> DomainName? in return ens }
-            .replaceError(with: nil)
-            .prepend(nil)
-
+        let resolvedEns: Future<DomainName?, Never> = asFuture { () -> DomainName? in
+            (try? await self.domainResolutionService.reverseResolveDomainName(address: self.account, server: RPCServer.forResolvingDomainNames)) ?? nil
+        }
         let viewState = Publishers.CombineLatest(assignedName, resolvedEns)
             .map { RenameWalletViewModel.ViewState(text: $0.0, placeholder: $0.1) }
             .eraseToAnyPublisher()

@@ -12,6 +12,7 @@ struct EasAttestation: Codable, Hashable {
     let v: UInt8
     let signer: AlphaWallet.Address
     let uid: String
+    ///This is the schema UID, not the schema, but we keep the name to be consistent with EAS terminology
     let schema: String
     let recipient: String
     let time: Int
@@ -20,9 +21,18 @@ struct EasAttestation: Codable, Hashable {
     let revocable: Bool
     let data: String
     let nonce: Int
+    let messageVersion: Int?
 
     //`primaryType` needs to be "Attest" instead of "Attestation" to match the type definition in `types` unlike EAS examples
     var eip712Representation: String {
+        if let messageVersion, messageVersion >= 1 {
+            return eip712RepresentationMessageVersion1(messageVersion: messageVersion)
+        } else {
+            return eip712RepresentationBeforeMessageVersion1
+        }
+    }
+
+    var eip712RepresentationBeforeMessageVersion1: String {
         return """
                {
                    "types": {
@@ -112,6 +122,86 @@ struct EasAttestation: Codable, Hashable {
         revocable = src.revocable
         data = src.data
         nonce = src.nonce
+        messageVersion = src.messageVersion
+    }
+
+    //Difference from pre-version 1 is adding a version field to the message (as well as updating `Attest` type to describe it)
+    private func eip712RepresentationMessageVersion1(messageVersion: Int) -> String {
+        return """
+               {
+                   "types": {
+                       "EIP712Domain": [
+                           {
+                               "name": "name",
+                               "type": "string"
+                           },
+                           {
+                               "name": "version",
+                               "type": "string"
+                           },
+                           {
+                               "name": "chainId",
+                               "type": "uint256"
+                           },
+                           {
+                               "name": "verifyingContract",
+                               "type": "address"
+                           }
+                       ],
+                       "Attest": [
+                           {
+                               "name": "version",
+                               "type": "uint16"
+                           },
+                           {
+                               "name": "schema",
+                               "type": "bytes32"
+                           },
+                           {
+                               "name": "recipient",
+                               "type": "address"
+                           },
+                           {
+                               "name": "time",
+                               "type": "uint64"
+                           },
+                           {
+                               "name": "expirationTime",
+                               "type": "uint64"
+                           },
+                           {
+                               "name": "revocable",
+                               "type": "bool"
+                           },
+                           {
+                               "name": "refUID",
+                               "type": "bytes32"
+                           },
+                           {
+                               "name": "data",
+                               "type": "bytes"
+                           }
+                       ]
+                   },
+                   "primaryType": "Attest",
+                   "domain": {
+                       "name": "EAS Attestation",
+                       "version": "\(version)",
+                       "chainId": \(chainId),
+                       "verifyingContract": "\(verifyingContract)"
+                   },
+                   "message": {
+                       "version": \(messageVersion),
+                       "time": \(time),
+                       "data": "\(data)",
+                       "expirationTime": \(expirationTime),
+                       "recipient": "\(recipient)",
+                       "refUID": "\(refUID)",
+                       "revocable": \(revocable),
+                       "schema": "\(schema)"
+                   }
+               }
+               """
     }
 }
 
@@ -136,6 +226,7 @@ struct EasAttestationFromArrayString: Decodable {
     let revocable: Bool
     let data: String
     let nonce: Int
+    let messageVersion: Int?
 
     init(from decoder: Decoder) throws {
         var container = try decoder.unkeyedContainer()
@@ -169,6 +260,7 @@ struct EasAttestationFromArrayString: Decodable {
         revocable = try container.decode(Bool.self)
         data = try container.decode(String.self)
         nonce = try container.decode(Int.self)
+        messageVersion = try? container.decode(Int.self)
     }
 
     enum functional {}

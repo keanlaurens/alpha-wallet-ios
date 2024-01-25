@@ -1,10 +1,11 @@
 // Copyright © 2018 Stormbird PTE. LTD.
 
+import Combine
 import UIKit
 import WebKit
-import AlphaWalletFoundation
 import AlphaWalletCore
-import Combine
+import AlphaWalletFoundation
+import AlphaWalletTokenScript
 
 class TokenCardRowView: UIView, TokenCardRowViewProtocol {
     private let server: RPCServer
@@ -54,9 +55,10 @@ class TokenCardRowView: UIView, TokenCardRowViewProtocol {
     var checkboxImageView = UIImageView(image: R.image.ticket_bundle_unchecked())
     var stateLabel = UILabel()
     var tokenView: TokenView
-    lazy var tokenScriptRendererView: TokenInstanceWebView = {
-        let webView = TokenInstanceWebView(server: server, wallet: wallet, assetDefinitionStore: assetDefinitionStore)
+    lazy var tokenScriptRendererView: TokenScriptWebView = {
+        let webView = TokenScriptWebView(server: server, serverWithInjectableRpcUrl: server, wallet: wallet.type, assetDefinitionStore: assetDefinitionStore)
         webView.delegate = self
+        webView.backgroundColor = Configuration.Color.Semantic.defaultViewBackground
         return webView
     }()
     var showCheckbox: Bool {
@@ -280,7 +282,7 @@ class TokenCardRowView: UIView, TokenCardRowViewProtocol {
             canDetailsBeVisible = false
             nativelyRenderedAttributeViews.hideAll()
             tokenScriptRendererView.isHidden = false
-            tokenScriptRendererView.loadHtml(viewModel.tokenScriptHtml)
+            tokenScriptRendererView.loadHtml(viewModel.tokenScriptHtml.html, urlFragment: viewModel.tokenScriptHtml.urlFragment)
                 //TODO not good to explicitly check for different types. Easy to miss
             if let viewModel = viewModel as? TokenCardRowViewModel {
                 tokenScriptRendererView.update(withTokenHolder: viewModel.tokenHolder, isFungible: false)
@@ -339,22 +341,16 @@ extension TokenCardRowView: TokenRowView {
     }
 }
 
-extension TokenCardRowView: TokenInstanceWebViewDelegate {
-
-    func requestSignMessage(message: SignMessageType,
-                            server: RPCServer,
-                            account: AlphaWallet.Address,
-                            source: Analytics.SignMessageRequestSource,
-                            requester: RequesterViewModel?) -> AnyPublisher<Data, PromiseError> {
-        
+extension TokenCardRowView: TokenScriptWebViewDelegate {
+    func requestSignMessage(message: SignMessageType, server: RPCServer, account: AlphaWallet.Address, inTokenScriptWebView tokenScriptWebView: TokenScriptWebView) -> AnyPublisher<Data, PromiseError> {
         return .fail(PromiseError(error: JsonRpcError.requestRejected))
     }
 
-    func shouldClose(tokenInstanceWebView: TokenInstanceWebView) {
+    func shouldClose(tokenScriptWebView: TokenScriptWebView) {
         //no-op
     }
 
-    func reinject(tokenInstanceWebView: TokenInstanceWebView) {
+    func reinject(tokenScriptWebView: TokenScriptWebView) {
         //Refresh if view, but not item-view
         if isStandalone {
             guard let lastTokenHolder = lastTokenHolder else { return }

@@ -99,8 +99,8 @@ final class AccountsViewModel {
         let viewState = Publishers.CombineLatest(accountRowViewModels, walletsSummary)
             .map { self.buildViewModels(sections: self.sections, accountViewModels: $0, summary: $1) }
             .handleEvents(receiveOutput: { self.viewModels = $0 })
-            .map { self.buildSnapshot(for: $0) }
-            .map { [configuration] snapshot in AccountsViewModel.ViewState(title: configuration.title, snapshot: snapshot) }
+            .map { functional.buildSnapshot(for: $0) }
+            .map { [configuration] snapshot in AccountsViewModel.ViewState(title: configuration.titleWith(walletCount: snapshot.walletCount), snapshot: snapshot.snapshot) }
 
         return .init(
             viewState: viewState.eraseToAnyPublisher(),
@@ -134,24 +134,16 @@ final class AccountsViewModel {
             }.eraseToAnyPublisher()
     }
 
-    private func buildSnapshot(for viewModels: [AccountsViewModel.SectionViewModel]) -> AccountsViewModel.Snapshot {
-        var snapshot = AccountsViewModel.Snapshot()
-        let sections = viewModels.map { $0.section }
-        snapshot.appendSections(sections)
-        for each in viewModels {
-            snapshot.appendItems(each.views, toSection: each.section)
-        }
-
-        return snapshot
-    }
-
     private func buildAccountRowViewModel(wallet: Wallet) -> AnyPublisher<AccountRowViewModel, Never> {
         let balance = walletBalanceService.walletBalance(for: wallet)
-        let blockieImage = blockiesGenerator.getBlockieOrEnsAvatarImage(address: wallet.address, fallbackImage: BlockiesImage.defaulBlockieImage)
-            .handleEvents(receiveOutput: { [analytics] value in
-                guard value.isEnsAvatar else { return }
-                analytics.setUser(property: Analytics.UserProperties.hasEnsAvatar, value: true)
-            })
+        let blockieImage: CurrentValueSubject<BlockiesImage, Never> = CurrentValueSubject(BlockiesImage.defaulBlockieImage)
+        Task {
+            blockieImage.value = await self.blockiesGenerator.getBlockieOrEnsAvatarImage(address: wallet.address, fallbackImage: BlockiesImage.defaulBlockieImage)
+        }
+        _ = blockieImage.handleEvents(receiveOutput: { [analytics] value in
+            guard value.isEnsAvatar else { return }
+            analytics.setUser(property: Analytics.UserProperties.hasEnsAvatar, value: true)
+        })
 
         let addressOrEnsName = getWalletName.assignedNameOrEns(for: wallet.address)
             .map { [wallet] ensOrName in
@@ -328,6 +320,23 @@ final class AccountsViewModel {
         }.first
     }
 
+}
+extension AccountsViewModel {
+    enum functional {}
+}
+
+fileprivate extension AccountsViewModel.functional {
+    static func buildSnapshot(for viewModels: [AccountsViewModel.SectionViewModel]) -> (snapshot: AccountsViewModel.Snapshot, walletCount: Int) {
+        var snapshot = AccountsViewModel.Snapshot()
+        let sections = viewModels.map { $0.section }
+        snapshot.appendSections(sections)
+        for each in viewModels {
+            snapshot.appendItems(each.views, toSection: each.section)
+        }
+        let walletCount = viewModels.reduce(0) { $0 + $1.numberOfWallets }
+
+        return (snapshot: snapshot, walletCount: walletCount)
+    }
 }
 
 extension AccountsViewModel {

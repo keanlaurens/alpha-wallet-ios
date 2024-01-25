@@ -6,9 +6,10 @@
 //
 
 import UIKit
-import BigInt
-import AlphaWalletFoundation
 import Combine
+import AlphaWalletCore
+import AlphaWalletFoundation
+import BigInt
 
 extension TransactionConfirmationViewModel {
     class SendNftTransactionViewModel: TransactionConfirmationViewModelType {
@@ -24,7 +25,7 @@ extension TransactionConfirmationViewModel {
 
         let confirmButtonViewModel: ConfirmButtonViewModel
         var openedSections = Set<Int>()
-        
+
         init(configurator: TransactionConfigurator,
              recipientResolver: RecipientResolver,
              tokensService: TokensProcessingPipeline) {
@@ -47,7 +48,8 @@ extension TransactionConfirmationViewModel {
                 .assign(to: \.etherCurrencyRate, on: self, ownership: .weak)
                 .store(in: &cancellable)
 
-            let stateChanges = Publishers.CombineLatest($etherCurrencyRate, recipientResolver.resolveRecipient()).mapToVoid()
+            let resolveRecipient = asFuture { await self.recipientResolver.resolveRecipient() }.eraseToAnyPublisher()
+            let stateChanges = Publishers.CombineLatest($etherCurrencyRate, resolveRecipient).mapToVoid()
 
             let viewState = Publishers.Merge(stateChanges, configurator.objectChanges)
                 .map { _ in

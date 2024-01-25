@@ -3,40 +3,31 @@
 import Foundation
 import AlphaWalletWeb3
 import AlphaWalletCore
-import Combine
 
-final class GetContractSymbol {
-    private var inFlightPromises: [String: AnyPublisher<String, SessionTaskError>] = [:]
-    private let queue = DispatchQueue(label: "org.alphawallet.swift.getContractSymbol")
-
+final actor GetContractSymbol {
+    private var inFlightTasks: [String: Task<String, Error>] = [:]
     private let blockchainProvider: BlockchainProvider
 
     init(blockchainProvider: BlockchainProvider) {
         self.blockchainProvider = blockchainProvider
     }
 
-    func getSymbol(for contract: AlphaWallet.Address) -> AnyPublisher<String, SessionTaskError> {
-        return Just(contract)
-            .receive(on: queue)
-            .setFailureType(to: SessionTaskError.self)
-            .flatMap { [weak self, queue, blockchainProvider] contract -> AnyPublisher<String, SessionTaskError> in
-                let key = contract.eip55String
-
-                if let promise = self?.inFlightPromises[key] {
-                    return promise
-                } else {
-                    let promise = blockchainProvider
-                        .call(Erc20SymbolMethodCall(contract: contract))
-                        .receive(on: queue)
-                        .handleEvents(receiveCompletion: { _ in self?.inFlightPromises[key] = .none })
-                        .share()
-                        .eraseToAnyPublisher()
-
-                    self?.inFlightPromises[key] = promise
-
-                    return promise
-                }
-            }.eraseToAnyPublisher()
+    private func setTask(_ task: Task<String, Error>?, forKey key: String) {
+        inFlightTasks[key] = task
     }
 
+    nonisolated func getSymbol(for contract: AlphaWallet.Address) async throws -> String {
+        let key = contract.eip55String
+        if let task = await inFlightTasks[key] {
+            return try await task.value
+        } else {
+            let task = Task<String, Error> {
+                let result = try await blockchainProvider.callAsync(Erc20SymbolMethodCall(contract: contract))
+                await setTask(nil, forKey: key)
+                return result
+            }
+            await setTask(task, forKey: key)
+            return try await task.value
+        }
+    }
 }

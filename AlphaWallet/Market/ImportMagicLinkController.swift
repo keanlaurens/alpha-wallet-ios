@@ -305,20 +305,19 @@ final class ImportMagicLinkController {
     }
 
     private func makeTokenHolder(_ bytes32Tokens: [String], _ contractAddress: AlphaWallet.Address) {
-        assetDefinitionStore.fetchXML(forContract: contractAddress, server: server, useCacheAndFetch: true) { [weak self, session] _ in
-            guard let strongSelf = self else { return }
-
-            func makeTokenHolder(name: String, symbol: String, type: TokenType? = nil) {
-                strongSelf.makeTokenHolderImpl(name: name, symbol: symbol, type: type, bytes32Tokens: bytes32Tokens, contractAddress: contractAddress)
-                strongSelf.updateTokenFields()
+        Task { @MainActor in
+            _ = await assetDefinitionStore.fetchXMLAsync(forContract: contractAddress, server: server, useCacheAndFetch: true)
+            func makeTokenHolder(name: String, symbol: String, type: TokenType? = nil) async {
+                await makeTokenHolderImpl(name: name, symbol: symbol, type: type, bytes32Tokens: bytes32Tokens, contractAddress: contractAddress)
+                updateTokenFields()
             }
 
-            if let existingToken = strongSelf.tokensService.tokenViewModel(for: contractAddress, server: strongSelf.server) {
-                let name = XMLHandler(token: existingToken, assetDefinitionStore: strongSelf.assetDefinitionStore).getLabel(fallback: existingToken.name)
-                makeTokenHolder(name: name, symbol: existingToken.symbol)
+            if let existingToken = await tokensService.tokenViewModel(for: contractAddress, server: server) {
+                let name = assetDefinitionStore.xmlHandler(forTokenScriptSupportable: existingToken).getLabel(fallback: existingToken.name)
+                await makeTokenHolder(name: name, symbol: existingToken.symbol)
             } else {
                 let localizedTokenTypeName = R.string.localizable.tokensTitlecase()
-                makeTokenHolder(name: localizedTokenTypeName, symbol: "")
+                await makeTokenHolder(name: localizedTokenTypeName, symbol: "")
 
                 let getContractName = session.tokenProvider.getContractName(for: contractAddress)
                 let getContractSymbol = session.tokenProvider.getContractSymbol(for: contractAddress)
@@ -328,29 +327,27 @@ final class ImportMagicLinkController {
                     .sinkAsync(receiveCompletion: { _ in
                         //no-op
                     }, receiveValue: { name, symbol, type in
-                        makeTokenHolder(name: name, symbol: symbol, type: type)
+                        Task { @MainActor in
+                            await makeTokenHolder(name: name, symbol: symbol, type: type)
+                        }
                     })
             }
         }
     }
 
-    private func makeTokenHolderImpl(name: String, symbol: String, type: TokenType? = nil, bytes32Tokens: [String], contractAddress: AlphaWallet.Address) {
+    private func makeTokenHolderImpl(name: String, symbol: String, type: TokenType? = nil, bytes32Tokens: [String], contractAddress: AlphaWallet.Address) async {
         //TODO pass in the wallet instead
-        guard let tokenType = type ?? (tokensService.tokenViewModel(for: contractAddress, server: server)?.type) else { return }
+        var tokenType1: TokenType? = type
+        if tokenType1 == nil {
+            tokenType1 = await tokensService.tokenViewModel(for: contractAddress, server: server)?.type
+        }
+        guard let tokenType = tokenType1 else { return }
         var tokens = [TokenScript.Token]()
-        let xmlHandler = XMLHandler(contract: contractAddress, tokenType: tokenType, assetDefinitionStore: assetDefinitionStore)
+        let xmlHandler = assetDefinitionStore.xmlHandler(forContract: contractAddress, tokenType: tokenType)
         for i in 0..<bytes32Tokens.count {
             let token = bytes32Tokens[i]
             if let tokenId = BigUInt(token.drop0x, radix: 16) {
-                let token = xmlHandler.getToken(
-                    name: name,
-                    symbol: symbol,
-                    fromTokenIdOrEvent: .tokenId(tokenId: tokenId), index: UInt16(i),
-                    inWallet: wallet.address,
-                    server: server,
-                    tokenType: tokenType,
-                    assetDefinitionStore: assetDefinitionStore)
-
+                let token = xmlHandler.getToken(name: name, symbol: symbol, fromTokenIdOrEvent: .tokenId(tokenId: tokenId), index: UInt16(i), inWallet: wallet.address, server: server, tokenType: tokenType)
                 tokens.append(token)
             }
         }
@@ -437,8 +434,7 @@ extension ImportMagicLinkController {
     enum functional {}
 }
 
-extension ImportMagicLinkController.functional {
-
+fileprivate extension ImportMagicLinkController.functional {
     static func requiresPaymasterForCurrencyLinks(signedOrder: SignedOrder, server: RPCServer) -> Bool {
         guard signedOrder.order.nativeCurrencyDrop else { return false }
         guard signedOrder.order.price == 0 else { return false }

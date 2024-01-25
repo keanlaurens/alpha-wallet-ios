@@ -1,5 +1,6 @@
 // Copyright SIX DAY LLC. All rights reserved.
 
+import AlphaWalletBrowser
 import AlphaWalletCore
 import BigInt
 import Foundation
@@ -88,7 +89,7 @@ extension RPCServer: Hashable, CaseIterable {
             case .heco_testnet: return "https://testnet.hecoinfo.com"
             case .heco: return "https://hecoinfo.com"
             case .fantom: return "https://ftmscan.com"
-            case .xDai: return "https://blockscout.com/poa/dai"
+            case .xDai: return "https://gnosis.blockscout.com"
             case .classic: return "https://blockscout.com/etc/mainnet"
             case .callisto: return "https://explorer.callisto.network"
             case .binance_smart_chain: return "https://bscscan.com"
@@ -97,7 +98,7 @@ extension RPCServer: Hashable, CaseIterable {
             case .mumbai_testnet: return "https://mumbai.polygonscan.com"
             case .optimistic: return "https://optimistic.etherscan.io"
             case .cronosMainnet: return "https://cronoscan.com"
-            case .cronosTestnet: return "https://cronos-explorer.crypto.org"
+            case .cronosTestnet: return "https://cronos.crypto.org/explorer"
             case .custom: return nil
             case .fantom_testnet: return "https://testnet.ftmscan.com"
             case .avalanche: return "https://snowtrace.io"
@@ -109,8 +110,8 @@ extension RPCServer: Hashable, CaseIterable {
             case .klaytnBaobabTestnet: return "https://baobab.scope.klaytn.com"
             case .ioTeX: return "https://iotexscan.io"
             case .ioTeXTestnet: return "https://testnet.iotexscan.io"
-            case .optimismGoerli: return "https://blockscout.com/optimism/goerli"
-            case .arbitrumGoerli: return "https://goerli-rollup-explorer.arbitrum.io"
+            case .optimismGoerli: return "https://optimism-goerli.blockscout.com/optimism/goerli"
+            case .arbitrumGoerli: return "https://testnet.arbiscan.io"
             case .okx: return "https://www.oklink.com/okc"
             case .sepolia: return "https://sepolia.etherscan.io"
             }
@@ -133,11 +134,11 @@ extension RPCServer: Hashable, CaseIterable {
             guard let url = URL(string: "https://api.hecoinfo.com/api") else { return .unknown }
             return .etherscan(apiKey: nil, apiUrl: url)
         case .heco_testnet:
-            guard let url = URL(string: "https://api-testnet.hecoinfo.com/api") else { return .unknown }
+            guard let url = URL(string: "https://api-testnet.hecoinfo.com/api/") else { return .unknown }
             return .etherscan(apiKey: nil, apiUrl: url)
         case .optimistic:
             guard let url = URL(string: "https://api-optimistic.etherscan.io/api") else { return .unknown }
-            return .etherscan(apiKey: Constants.Credentials.etherscanKey, apiUrl: url)
+            return .etherscan(apiKey: Constants.Credentials.optimisticExplorerKey, apiUrl: url)
         case .binance_smart_chain:
             guard let url = URL(string: "https://api.bscscan.com/api") else { return .unknown }
             return .etherscan(apiKey: Constants.Credentials.binanceSmartChainExplorerApiKey, apiUrl: url)
@@ -166,22 +167,24 @@ extension RPCServer: Hashable, CaseIterable {
             guard let url = URL(string: "https://api-sepolia.etherscan.io/api") else { return .unknown }
             return .etherscan(apiKey: Constants.Credentials.etherscanKey, apiUrl: url)
         case .arbitrumGoerli:
-            guard let url = URL(string: "https://goerli-rollup-explorer.arbitrum.io/api") else { return .unknown }
+            guard let url = URL(string: "https://testnet.arbiscan.io/api") else { return .unknown }
+            //TODO testnet.arbiscan.io should be .etherscan instead?
             return .blockscout(apiKey: nil, apiUrl: url)
         case .optimismGoerli:
-            guard let url = URL(string: "https://blockscout.com/optimism/goerli/api") else { return .unknown }
+            guard let url = URL(string: "https://optimism-goerli.blockscout.com/api") else { return .unknown }
             return .blockscout(apiKey: nil, apiUrl: url)
         case .classic:
             guard let url = URL(string: "https://blockscout.com/etc/mainnet/api") else { return .unknown }
             return .blockscout(apiKey: nil, apiUrl: url)
         case .xDai:
-            guard let url = URL(string: "https://blockscout.com/poa/xdai/api") else { return .unknown }
+            guard let url = URL(string: "https://gnosis.blockscout.com/api") else { return .unknown }
+            //TODO doesn't look like API key is needed for https://gnosis.blockscout.com/api as of 20230828
             return .blockscout(apiKey: Constants.Credentials.xDaiExplorerKey, apiUrl: url)
         case .callisto:
             guard let url = URL(string: "https://explorer.callisto.network/api") else { return .unknown }
             return .blockscout(apiKey: nil, apiUrl: url)
         case .cronosTestnet:
-            guard let url = URL(string: "https://cronos-explorer.crypto.org/api") else { return .unknown }
+            guard let url = URL(string: "https://cronos.crypto.org/explorer/api") else { return .unknown }
             return .blockscout(apiKey: nil, apiUrl: url)
         case .palm:
             guard let url = URL(string: "https://explorer.palm.io/api") else { return .unknown }
@@ -373,6 +376,7 @@ extension RPCServer: Hashable, CaseIterable {
         }
     }
 
+    //TODO check if this values are still duplicated in TokenScriptWebView
     public var rpcURL: URL {
         let urlString: String = {
             switch self {
@@ -420,23 +424,10 @@ extension RPCServer: Hashable, CaseIterable {
             case .optimismGoerli: return "https://optimism-goerli.infura.io/v3/\(Constants.Credentials.infuraKey)"
             case .arbitrumGoerli: return "https://arbitrum-goerli.infura.io/v3/\(Constants.Credentials.infuraKey)"
             case .okx: return "https://exchainrpc.okex.org/"
-            case .sepolia: return "https://rpc.sepolia.org"
+            case .sepolia: return "https://sepolia.infura.io/v3/\(Constants.Credentials.infuraKey)"
             }
         }()
         return URL(string: urlString)!
-    }
-
-    //Main reason for this is we can't use KAS nodes for Klaytn mainnet and testnet as we can't/didn't also inject the Basic Auth
-    //TODO fix it so Klaytn KAS Basic Auth is injected to web3 browser. Their public node are always rate limited
-    var web3InjectedRpcURL: URL {
-        switch serverWithEnhancedSupport {
-        case .main, .xDai, .polygon, .binance_smart_chain, .heco, .rinkeby, .arbitrum, nil:
-            return rpcURL
-        case .klaytnCypress:
-            return URL(string: "https://public-node-api.klaytnapi.com/v1/cypress")!
-        case .klaytnBaobabTestnet:
-            return URL(string: "https://api.baobab.klaytn.net:8651")!
-        }
     }
 
     var networkRequestsQueuePriority: Operation.QueuePriority {
@@ -444,13 +435,6 @@ extension RPCServer: Hashable, CaseIterable {
         case .main, .polygon, .klaytnCypress, .klaytnBaobabTestnet: return .normal
         case .xDai, .classic, .callisto, .goerli, .binance_smart_chain, .binance_smart_chain_testnet, .custom, .heco, .heco_testnet, .fantom, .fantom_testnet, .avalanche, .avalanche_testnet, .mumbai_testnet, .optimistic, .cronosTestnet, .arbitrum, .palm, .palmTestnet, .ioTeX, .ioTeXTestnet, .optimismGoerli, .arbitrumGoerli, .cronosMainnet, .okx, .sepolia: return .low
         }
-    }
-
-    public init?(chainIdOptional chainID: Int) {
-        guard let server = Self.availableServers.first(where: { $0.chainID == chainID }) else {
-            return nil
-        }
-        self = server
     }
 
     public init?(withMagicLinkHost magicLinkHost: String) {
@@ -520,12 +504,14 @@ extension RPCServer: Hashable, CaseIterable {
     public var displayOrderPriority: Int {
         switch self {
         case .main: return 1
-        case .xDai: return 2
-        case .classic: return 3
+        case .binance_smart_chain: return 2
+        case .sepolia: return 3
+        case .binance_smart_chain_testnet: return 4
+        case .polygon: return 5
+        case .xDai: return 6
+        case .classic: return 7
         case .callisto: return 9
-        case .goerli: return 10
-        case .binance_smart_chain: return 12
-        case .binance_smart_chain_testnet: return 13
+        case .goerli: return 12
         case .custom(let custom): return 300000 + custom.chainID
         case .heco: return 14
         case .heco_testnet: return 15
@@ -533,7 +519,6 @@ extension RPCServer: Hashable, CaseIterable {
         case .fantom_testnet: return 17
         case .avalanche: return 18
         case .avalanche_testnet: return 19
-        case .polygon: return 20
         case .mumbai_testnet: return 21
         case .optimistic: return 22
         case .cronosTestnet: return 24
@@ -548,7 +533,6 @@ extension RPCServer: Hashable, CaseIterable {
         case .arbitrumGoerli: return 37
         case .cronosMainnet: return 38
         case .okx: return 39
-        case .sepolia: return 40
         }
     }
 
@@ -641,6 +625,21 @@ extension RPCServer: Hashable, CaseIterable {
         }
 
         return nil
+    }
+}
+
+extension RPCServer: WithInjectableRpcUrl {
+    //Main reason for this is we can't use KAS nodes for Klaytn mainnet and testnet as we can't/didn't also inject the Basic Auth
+    //TODO fix it so Klaytn KAS Basic Auth is injected to web3 browser. Their public node are always rate limited
+    public var web3InjectedRpcURL: URL {
+        switch serverWithEnhancedSupport {
+        case .main, .xDai, .polygon, .binance_smart_chain, .heco, .rinkeby, .arbitrum, nil:
+            return rpcURL
+        case .klaytnCypress:
+            return URL(string: "https://public-node-api.klaytnapi.com/v1/cypress")!
+        case .klaytnBaobabTestnet:
+            return URL(string: "https://api.baobab.klaytn.net:8651")!
+        }
     }
 }
 

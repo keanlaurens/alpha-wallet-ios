@@ -12,14 +12,14 @@ import AlphaWalletCore
 import AlphaWalletTokenScript
 import CombineExt
 
-class ActivitiesGenerator {
+actor ActivitiesGenerator {
     private let sessionsProvider: SessionsProvider
     private let transactionsFilterStrategy: TransactionsFilterStrategy
     private let tokensService: TokensService
     private let activitiesFilterStrategy: ActivitiesFilterStrategy
     private let eventsActivityDataStore: EventsActivityDataStoreProtocol
 
-    var tokensAndTokenHolders: AtomicDictionary<AddressAndRPCServer, [TokenHolder]> = .init()
+    var tokensAndTokenHolders: [AddressAndRPCServer: [TokenHolder]] = [:]
 
     init(sessionsProvider: SessionsProvider,
          transactionsFilterStrategy: TransactionsFilterStrategy,
@@ -37,7 +37,11 @@ class ActivitiesGenerator {
     func generateActivities() -> AnyPublisher<[ActivityTokenObjectTokenHolder], Never> {
         let tokens = sessionsProvider.sessions
             .receive(on: DispatchQueue.main)
-            .map { self.getTokensForActivities(servers: Array($0.keys)) }
+            .flatMap { sessions in
+                asFuture {
+                    await self.getTokensForActivities(servers: Array(sessions.keys))
+                }
+            }
 
         let eventsForActivities = sessionsProvider.sessions
             .receive(on: DispatchQueue.main)
@@ -47,14 +51,14 @@ class ActivitiesGenerator {
         return Publishers.CombineLatest(tokens, eventsForActivities)
             .map { self.getTokensAndXmlHandlers(tokens: $0.0) }
             .map { self.getContractsAndCards(contractServerXmlHandlers: $0) }
-            .map { self.getActivitiesAndTokens(contractsAndCards: $0) }
+            .flatMap { contractsAndCards in asFuture { await self.getActivitiesAndTokens(contractsAndCards: contractsAndCards) } }
             .eraseToAnyPublisher()
     }
 
-    private func getTokensForActivities(servers: [RPCServer]) -> [Token] {
+    private func getTokensForActivities(servers: [RPCServer]) async -> [Token] {
         switch transactionsFilterStrategy {
         case .all:
-            return tokensService.tokens(for: servers)
+            return await tokensService.tokens(for: servers)
         case .filter(_, let token):
             precondition(servers.contains(token.server), "fatal error, no session for server: \(token.server)")
             return [token]
@@ -82,7 +86,7 @@ class ActivitiesGenerator {
             for card in xmlHandler.activityCards {
                 let (filterName, filterValue) = card.eventOrigin.eventFilter
                 let interpolatedFilter: String
-                if let implicitAttribute = EventSource.functional.convertToImplicitAttribute(string: filterValue) {
+                if let implicitAttribute = EventSource.convertToImplicitAttribute(string: filterValue) {
                     switch implicitAttribute {
                     case .tokenId:
                         continue
@@ -113,11 +117,11 @@ class ActivitiesGenerator {
         return contractsAndCardsOptional.flatMap { $0 }
     }
 
-    private func getActivitiesAndTokens(contractsAndCards: ContractsAndCards) -> [ActivityTokenObjectTokenHolder] {
+    private func getActivitiesAndTokens(contractsAndCards: ContractsAndCards) async -> [ActivityTokenObjectTokenHolder] {
         var activitiesAndTokens: [ActivityTokenObjectTokenHolder] = .init()
         //NOTE: here is a lot of calculations, `contractsAndCards` could reach up of 1000 items, as well as recentEvents could reach 1000.Simply it call inner function 1 000 000 times
         for (contract, server, card, interpolatedFilter) in contractsAndCards {
-            let activities = getActivities(contract: contract, server: server, card: card, interpolatedFilter: interpolatedFilter)
+            let activities = await getActivities(contract: contract, server: server, card: card, interpolatedFilter: interpolatedFilter)
             //NOTE: filter activities to avoid: `Fatal error: Duplicate values for key: '<id>'`
             let filteredActivities = activities.filter { data in !activitiesAndTokens.contains(where: { $0.activity.id == data.activity.id }) }
             activitiesAndTokens.append(contentsOf: filteredActivities)
@@ -139,67 +143,64 @@ class ActivitiesGenerator {
         }
     }
 
-    private func getActivities(contract: AlphaWallet.Address,
-                               server: RPCServer,
-                               card: TokenScriptCard,
-                               interpolatedFilter: String) -> [ActivityTokenObjectTokenHolder] {
+    private func getActivityForEvent(token: Token, session: WalletSession, card: TokenScriptCard, event: EventActivityInstance) async -> ActivityTokenObjectTokenHolder? {
+        let implicitAttributes = generateImplicitAttributesForToken(contract: token.contractAddress, server: session.server, symbol: token.symbol)
+        let tokenAttributes = implicitAttributes
+        var cardAttributes = functional.generateImplicitAttributesForCard(forContract: token.contractAddress, server: session.server, event: event)
 
+        cardAttributes.merge(event.data) { _, new in new }
+
+        for parameter in card.eventOrigin.parameters {
+            guard let originalValue = cardAttributes[parameter.name] else { continue }
+            guard let type = SolidityType(rawValue: parameter.type) else { continue }
+            let translatedValue = type.coerce(value: originalValue)
+            cardAttributes[parameter.name] = translatedValue
+        }
+
+        let tokenHolders: [TokenHolder]
+
+        if let h = tokensAndTokenHolders[token.addressAndRPCServer] {
+            tokenHolders = h
+        } else {
+            if token.contractAddress == Constants.nativeCryptoAddressInDatabase {
+                let tokenScriptToken = TokenScript.Token(
+                    tokenIdOrEvent: .tokenId(tokenId: .init(1)),
+                    tokenType: .nativeCryptocurrency,
+                    index: 0,
+                    name: "",
+                    symbol: "",
+                    status: .available,
+                    values: .init())
+
+                tokenHolders = [TokenHolder(tokens: [tokenScriptToken], contractAddress: token.contractAddress, hasAssetDefinition: true)]
+            } else {
+                tokenHolders = await session.tokenAdaptor.getTokenHolders(token: token)
+            }
+            tokensAndTokenHolders[token.addressAndRPCServer] = tokenHolders
+        }
+        //NOTE: using `tokenHolders[0]` i received crash with out of range exception
+        guard let tokenHolder = tokenHolders.first else { return nil }
+        //TODO fix for activities: special fix to filter out the event we don't want - need to doc this and have to handle with TokenScript design
+        let isNativeCryptoAddress = token.contractAddress == Constants.nativeCryptoAddressInDatabase
+        if card.name == "aETHMinted" && isNativeCryptoAddress && cardAttributes["amount"]?.uintValue == 0 {
+            return nil
+        } else {
+            //no-op
+        }
+
+        let activity = Activity(id: Int.random(in: 0..<Int.max), rowType: .standalone, token: token, server: event.server, name: card.name, eventName: event.eventName, blockNumber: event.blockNumber, transactionId: event.transactionId, transactionIndex: event.transactionIndex, logIndex: event.logIndex, date: event.date, values: (token: tokenAttributes, card: cardAttributes), view: card.view, itemView: card.itemView, isBaseCard: card.isBase, state: .completed)
+
+        return (activity: activity, tokenObject: token, tokenHolder: tokenHolder)
+    }
+
+    private func getActivities(contract: AlphaWallet.Address, server: RPCServer, card: TokenScriptCard, interpolatedFilter: String) async -> [ActivityTokenObjectTokenHolder] {
+        guard let token: Token = await tokensService.token(for: contract, server: server) else { return [] }
+        guard let session: WalletSession = sessionsProvider.session(for: token.server) else { return [] }
         //NOTE: eventsActivityDataStore. getRecentEvents() returns only 100 events, that could cause error with creating activities (missing events)
         //replace with fetching only filtered event instances,
-        let events = eventsActivityDataStore.getRecentEventsSortedByBlockNumber(for: card.eventOrigin.contract, server: server, eventName: card.eventOrigin.eventName, interpolatedFilter: interpolatedFilter)
-
-        let activitiesForThisCard: [ActivityTokenObjectTokenHolder] = events.compactMap { eachEvent -> ActivityTokenObjectTokenHolder? in
-            guard let token = tokensService.token(for: contract, server: server) else { return nil }
-            guard let session = sessionsProvider.session(for: token.server) else { return nil }
-
-            let implicitAttributes = generateImplicitAttributesForToken(contract: contract, server: server, symbol: token.symbol)
-            let tokenAttributes = implicitAttributes
-            var cardAttributes = ActivitiesService.functional
-                .generateImplicitAttributesForCard(forContract: contract, server: server, event: eachEvent)
-
-            cardAttributes.merge(eachEvent.data) { _, new in new }
-
-            for parameter in card.eventOrigin.parameters {
-                guard let originalValue = cardAttributes[parameter.name] else { continue }
-                guard let type = SolidityType(rawValue: parameter.type) else { continue }
-                let translatedValue = type.coerce(value: originalValue)
-                cardAttributes[parameter.name] = translatedValue
-            }
-
-            let tokenHolders: [TokenHolder]
-
-            if let h = tokensAndTokenHolders[token.addressAndRPCServer] {
-                tokenHolders = h
-            } else {
-                if token.contractAddress == Constants.nativeCryptoAddressInDatabase {
-                    let tokenScriptToken = TokenScript.Token(
-                        tokenIdOrEvent: .tokenId(tokenId: .init(1)),
-                        tokenType: .nativeCryptocurrency,
-                        index: 0,
-                        name: "",
-                        symbol: "",
-                        status: .available,
-                        values: .init())
-
-                    tokenHolders = [TokenHolder(tokens: [tokenScriptToken], contractAddress: token.contractAddress, hasAssetDefinition: true)]
-                } else {
-                    tokenHolders = session.tokenAdaptor.getTokenHolders(token: token)
-                }
-                tokensAndTokenHolders[token.addressAndRPCServer] = tokenHolders
-            }
-            //NOTE: using `tokenHolders[0]` i received crash with out of range exception
-            guard let tokenHolder = tokenHolders.first else { return nil }
-            //TODO fix for activities: special fix to filter out the event we don't want - need to doc this and have to handle with TokenScript design
-            let isNativeCryptoAddress = token.contractAddress == Constants.nativeCryptoAddressInDatabase
-            if card.name == "aETHMinted" && isNativeCryptoAddress && cardAttributes["amount"]?.uintValue == 0 {
-                return nil
-            } else {
-                //no-op
-            }
-
-            let activity = Activity(id: Int.random(in: 0..<Int.max), rowType: .standalone, token: token, server: eachEvent.server, name: card.name, eventName: eachEvent.eventName, blockNumber: eachEvent.blockNumber, transactionId: eachEvent.transactionId, transactionIndex: eachEvent.transactionIndex, logIndex: eachEvent.logIndex, date: eachEvent.date, values: (token: tokenAttributes, card: cardAttributes), view: card.view, itemView: card.itemView, isBaseCard: card.isBase, state: .completed)
-
-            return (activity: activity, tokenObject: token, tokenHolder: tokenHolder)
+        let events = await eventsActivityDataStore.getRecentEventsSortedByBlockNumber(for: card.eventOrigin.contract, server: server, eventName: card.eventOrigin.eventName, interpolatedFilter: interpolatedFilter)
+        let activitiesForThisCard: [ActivityTokenObjectTokenHolder] = await events.asyncCompactMap { eachEvent -> ActivityTokenObjectTokenHolder? in
+            return await self.getActivityForEvent(token: token, session: session, card: card, event: eachEvent)
         }
 
         return activitiesForThisCard
@@ -225,6 +226,20 @@ class ActivitiesGenerator {
                 results[each.javaScriptName] = .address(contract)
             }
         }
+        return results
+    }
+}
+
+extension ActivitiesGenerator {
+    enum functional {}
+}
+
+fileprivate extension ActivitiesGenerator.functional {
+    static func generateImplicitAttributesForCard(forContract contract: AlphaWallet.Address, server: RPCServer, event: EventActivityInstance) -> [String: AssetInternalValue] {
+        var results = [String: AssetInternalValue]()
+        var timestamp: GeneralisedTime = .init()
+        timestamp.date = event.date
+        results["timestamp"] = .generalisedTime(timestamp)
         return results
     }
 }

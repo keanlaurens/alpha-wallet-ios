@@ -4,21 +4,22 @@ import Foundation
 import Combine
 import AlphaWalletCore
 
-public final class CoinTickers {
-    private let fetchers: AtomicArray<CoinTickersFetcher> = .init()
+public final actor CoinTickers {
+    private var fetchers: [CoinTickersFetcher] = []
     private let storage: CoinTickersStorage & ChartHistoryStorage & TickerIdsStorage
-    private var chartHistories: [TokenMappedToTicker: CurrentValueSubject<[ChartHistoryPeriod: ChartHistory], Never>] = .init()
+    private var chartHistories: [TokenMappedToTicker: Task<[ChartHistoryPeriod: ChartHistory], Never>] = .init()
     private var cancelable = Set<AnyCancellable>()
 
     public init(fetchers: [CoinTickersFetcher], storage: CoinTickersStorage & ChartHistoryStorage & TickerIdsStorage) {
-        self.fetchers.set(array: fetchers)
+        self.fetchers = fetchers
         self.storage = storage
     }
 
     public convenience init(transporter: ApiTransporter, analytics: AnalyticsLogger) {
         let storage: CoinTickersStorage & ChartHistoryStorage & TickerIdsStorage
         if isRunningTests() {
-            storage = RealmStore(realm: fakeRealm(), name: "org.alphawallet.swift.realmStore.shared.wallet")
+            //TODO should be injected in tests instead
+            storage = RealmStore(config: fakeRealmConfiguration(), name: "org.alphawallet.swift.realmStore.shared.wallet")
         } else {
             storage = RealmStore.shared
         }
@@ -30,89 +31,88 @@ public final class CoinTickers {
 }
 
 extension CoinTickers: CoinTickersFetcher {
-    public func fetchTickers(for tokens: [TokenMappedToTicker], force: Bool, currency: Currency) {
+    public func fetchTickers(for tokens: [TokenMappedToTicker], force: Bool, currency: Currency) async {
         for each in functional.createFetcherToTokenMappedToTickerPairs(for: tokens, fetchers: fetchers) {
             guard !each.tokenMappedToTickers.isEmpty else { continue }
-            each.fetcher.fetchTickers(for: each.tokenMappedToTickers, force: force, currency: currency)
+            await each.fetcher.fetchTickers(for: each.tokenMappedToTickers, force: force, currency: currency)
         }
     }
 
-    public func resolveTickerIds(for tokens: [TokenMappedToTicker]) {
+    public func resolveTickerIds(for tokens: [TokenMappedToTicker]) async {
         for each in functional.createFetcherToTokenMappedToTickerPairs(for: tokens, fetchers: fetchers) {
             guard !each.tokenMappedToTickers.isEmpty else { continue }
-            each.fetcher.resolveTickerIds(for: each.tokenMappedToTickers)
+            await each.fetcher.resolveTickerIds(for: each.tokenMappedToTickers)
         }
     }
 
-    public func fetchChartHistories(for token: TokenMappedToTicker, force: Bool, periods: [ChartHistoryPeriod], currency: Currency) -> AnyPublisher<[ChartHistoryPeriod: ChartHistory], Never> {
-        if let fetcher = functional.getFetcher(forTokenMappedToTicker: token, fetchers: fetchers) {
-            return fetcher.fetchChartHistories(for: token, force: force, periods: periods, currency: currency)
+    public nonisolated func fetchChartHistories(for token: TokenMappedToTicker, force: Bool, periods: [ChartHistoryPeriod], currency: Currency) async -> [ChartHistoryPeriod: ChartHistory] {
+        if let fetcher = functional.getFetcher(forTokenMappedToTicker: token, fetchers: await fetchers) {
+            return await fetcher.fetchChartHistories(for: token, force: force, periods: periods, currency: currency)
         } else {
-            return .empty()
+            return [:]
         }
     }
 
     //TODO this isn't called?
-    public func cancel() {
-        fetchers.forEach { $0.cancel() }
+    public func cancel() async {
+        for each in fetchers {
+            await each.cancel()
+        }
     }
 }
 
 extension CoinTickers: CoinTickersProvider {
-    public var tickersDidUpdate: AnyPublisher<Void, Never> {
+    public nonisolated var tickersDidUpdate: AnyPublisher<Void, Never> {
         return storage.tickersDidUpdate
     }
 
-    public var updateTickerIds: AnyPublisher<[(tickerId: TickerIdString, key: AddressAndRPCServer)], Never> {
+    public nonisolated var updateTickerIds: AnyPublisher<[(tickerId: TickerIdString, key: AddressAndRPCServer)], Never> {
         storage.updateTickerIds
     }
 
-    public func ticker(for key: AddressAndRPCServer, currency: Currency) -> CoinTicker? {
-        return storage.ticker(for: key, currency: currency)
+    public func ticker(for key: AddressAndRPCServer, currency: Currency) async -> CoinTicker? {
+        return await storage.ticker(for: key, currency: currency)
     }
 
-    public func addOrUpdateTestsOnly(ticker: CoinTicker?, for token: TokenMappedToTicker) {
+    public nonisolated func addOrUpdateTestsOnly(ticker: CoinTicker?, for token: TokenMappedToTicker) -> Task<Void, Never> {
         let tickers: [AssignedCoinTickerId: CoinTicker] = ticker.flatMap { ticker in
             let tickerId = AssignedCoinTickerId(tickerId: "tickerId-\(token.contractAddress)-\(token.server.chainID)", token: token)
             return [tickerId: ticker]
         } ?? [:]
 
-        storage.addOrUpdate(tickers: tickers)
+        return storage.addOrUpdate(tickers: tickers)
     }
 
-    public func chartHistories(for token: TokenMappedToTicker, currency: Currency) -> AnyPublisher<[ChartHistoryPeriod: ChartHistory], Never> {
-        guard let fetcher = functional.getFetcher(forTokenMappedToTicker: token, fetchers: fetchers) else { return .empty() }
+    public func chartHistories(for token: TokenMappedToTicker, currency: Currency) async -> [ChartHistoryPeriod: ChartHistory] {
+        guard let fetcher = functional.getFetcher(forTokenMappedToTicker: token, fetchers: fetchers) else { return [:] }
         if let tokenAndChartHistories = chartHistories[token] {
-            return tokenAndChartHistories.eraseToAnyPublisher()
+            return await tokenAndChartHistories.value
         } else {
-            let publisher = CurrentValueSubject<[ChartHistoryPeriod: ChartHistory], Never>(.init())
-            chartHistories[token] = publisher
-            //TODO user might have changed the currency between fetches? Does it work?
-            fetchChartHistories(for: token, force: false, periods: ChartHistoryPeriod.allCases, currency: currency)
-                .assign(to: \.value, on: publisher)
-                .store(in: &cancelable)
-
-            return publisher.eraseToAnyPublisher()
+            let task = Task<[ChartHistoryPeriod: ChartHistory], Never> {
+                await fetchChartHistories(for: token, force: false, periods: ChartHistoryPeriod.allCases, currency: currency)
+            }
+            chartHistories[token] = task
+            return await task.value
         }
     }
 }
 
-private extension CoinTickers.functional {
+fileprivate extension CoinTickers.functional {
     struct FetcherTokenMappedToTickerPair {
         let fetcher: CoinTickersFetcher
         let tokenMappedToTickers: [TokenMappedToTicker]
     }
 
-    static func getFetcher(forTokenMappedToTicker tokenMappedToTicker: TokenMappedToTicker, fetchers: AtomicArray<CoinTickersFetcher>) -> CoinTickersFetcher? {
+    static func getFetcher(forTokenMappedToTicker tokenMappedToTicker: TokenMappedToTicker, fetchers: [CoinTickersFetcher]) -> CoinTickersFetcher? {
         createFetcherToTokenMappedToTickerPairs(for: [tokenMappedToTicker], fetchers: fetchers).first?.fetcher
     }
 
-    static func createFetcherToTokenMappedToTickerPairs(for tokenMappedToTickers: [TokenMappedToTicker], fetchers: AtomicArray<CoinTickersFetcher>) -> [FetcherTokenMappedToTickerPair] {
+    static func createFetcherToTokenMappedToTickerPairs(for tokenMappedToTickers: [TokenMappedToTicker], fetchers: [CoinTickersFetcher]) -> [FetcherTokenMappedToTickerPair] {
         var mappedToProvidersTypeTokens: [String: [TokenMappedToTicker]] = [:]
         for each in tokenMappedToTickers {
             //TODO fragile
             let type = String(describing: each.coinTickerProviderType)
-            var tokens = mappedToProvidersTypeTokens[type] ?? []
+            var tokens = mappedToProvidersTypeTokens[type, default: []]
             tokens += [each]
             mappedToProvidersTypeTokens[type] = tokens
         }

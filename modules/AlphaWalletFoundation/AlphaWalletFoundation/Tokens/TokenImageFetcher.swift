@@ -68,12 +68,13 @@ public protocol TokenImageFetcher {
                serverIconImage: UIImage?) -> TokenImagePublisher
 }
 
-public class TokenImageFetcherImpl: TokenImageFetcher {
+public actor TokenImageFetcherImpl: TokenImageFetcher {
     private let networking: ImageFetcher
     private let tokenGroupsIdentifier: TokenGroupIdentifierProtocol
     private let spamImage: UIImage
-    private let subscribables: AtomicDictionary<String, CurrentValueSubject<TokenImage?, Never>> = .init()
-    private let inFlightTasks: AtomicDictionary<String, Task<Void, Never>> = .init()
+    private var subscribables: [String: CurrentValueSubject<TokenImage?, Never>] = .init()
+    private var inFlightTasks: [String: Task<Void, Never>] = .init()
+    private var cancellables: Set<AnyCancellable> = .init()
 
     enum ImageAvailabilityError: LocalizedError {
         case notAvailable
@@ -88,55 +89,7 @@ public class TokenImageFetcherImpl: TokenImageFetcher {
         self.spamImage = spamImage
     }
 
-    private static func programmaticallyGenerateIcon(for contractAddress: AlphaWallet.Address,
-                                                     type: TokenType,
-                                                     server: RPCServer,
-                                                     symbol: String,
-                                                     colors: [UIColor],
-                                                     staticOverlayIcon: UIImage?,
-                                                     blockChainNameColor: UIColor) -> TokenImage? {
-
-        guard let i = [Constants.Image.numberOfCharactersOfSymbolToShowInIcon, symbol.count].min() else { return nil }
-        let symbol = symbol.substring(to: i)
-        let rawImage: UIImage?
-        let overlayServerIcon: UIImage?
-
-        switch type {
-        case .erc1155, .erc721, .erc721ForTickets:
-            rawImage = nil
-            overlayServerIcon = staticOverlayIcon
-        case .erc20, .erc875:
-            rawImage = programmaticallyGeneratedIconImage(
-                for: contractAddress,
-                server: server,
-                colors: colors,
-                blockChainNameColor: blockChainNameColor)
-
-            overlayServerIcon = staticOverlayIcon
-        case .nativeCryptocurrency:
-            rawImage = programmaticallyGeneratedIconImage(
-                for: contractAddress,
-                server: server,
-                colors: colors,
-                blockChainNameColor: blockChainNameColor)
-
-            overlayServerIcon = nil
-        }
-        let imageSource = rawImage.flatMap { RawImage.generated(image: $0, symbol: symbol) } ?? .none
-
-        return .init(image: .image(imageSource), isFinal: false, overlayServerIcon: overlayServerIcon)
-    }
-
-    private func getDefaultOrGenerateIcon(server: RPCServer,
-                                          contractAddress: AlphaWallet.Address,
-                                          type: TokenType,
-                                          name: String,
-                                          tokenImage: UIImage?,
-                                          colors: [UIColor],
-                                          staticOverlayIcon: UIImage?,
-                                          blockChainNameColor: UIColor,
-                                          serverIconImage: UIImage?) -> TokenImage? {
-
+    private nonisolated func getDefaultOrGenerateIcon(server: RPCServer, contractAddress: AlphaWallet.Address, type: TokenType, name: String, tokenImage: UIImage?, colors: [UIColor], staticOverlayIcon: UIImage?, blockChainNameColor: UIColor, serverIconImage: UIImage?) -> TokenImage? {
         switch type {
         case .nativeCryptocurrency:
             if let img = iconImageForContractAndChainID(image: serverIconImage, address: contractAddress.eip55String, chainID: server.chainID) {
@@ -148,7 +101,7 @@ public class TokenImageFetcherImpl: TokenImageFetcher {
             }
         }
 
-        return TokenImageFetcherImpl.programmaticallyGenerateIcon(
+        return functional.programmaticallyGenerateIcon(
             for: contractAddress,
             type: type,
             server: server,
@@ -158,25 +111,32 @@ public class TokenImageFetcherImpl: TokenImageFetcher {
             blockChainNameColor: blockChainNameColor)
     }
 
-    private func iconImageForContractAndChainID(image iconImage: UIImage?, address: String, chainID: Int) -> UIImage? {
+    private nonisolated func iconImageForContractAndChainID(image iconImage: UIImage?, address: String, chainID: Int) -> UIImage? {
         if tokenGroupsIdentifier.isSpam(address: address, chainID: chainID) {
             return spamImage
         }
         return iconImage
     }
 
-    public func image(contractAddress: AlphaWallet.Address,
-                      server: RPCServer,
-                      name: String,
-                      type: TokenType,
-                      balance: NonFungibleFromJson?,
-                      size: GoogleContentSize,
-                      contractDefinedImage: UIImage?,
-                      colors: [UIColor],
-                      staticOverlayIcon: UIImage?,
-                      blockChainNameColor: UIColor,
-                      serverIconImage: UIImage?) -> TokenImagePublisher {
+    public nonisolated func image(contractAddress: AlphaWallet.Address, server: RPCServer, name: String, type: TokenType, balance: NonFungibleFromJson?, size: GoogleContentSize, contractDefinedImage: UIImage?, colors: [UIColor], staticOverlayIcon: UIImage?, blockChainNameColor: UIColor, serverIconImage: UIImage?) -> TokenImagePublisher {
+        //Cannot use PassthroughSubject because of how we use flatMapLatest downstream
+        let subject: CurrentValueSubject<TokenImage?, Never> = .init(nil)
+        Task {
+            let sourcePublisher = await self._image(contractAddress: contractAddress, server: server, name: name, type: type, balance: balance, size: size, contractDefinedImage: contractDefinedImage, colors: colors, staticOverlayIcon: staticOverlayIcon, blockChainNameColor: blockChainNameColor, serverIconImage: serverIconImage)
+            let cancellable = sourcePublisher.sink { image in
+                subject.send(image)
+            }
+            await storeCancellable(cancellable)
+        }
+        return subject.eraseToAnyPublisher()
+    }
 
+    //Need this so we can access `cancellables` in the actor's isolated context from within a `Task`
+    private func storeCancellable(_ cancellable: AnyCancellable) {
+        cancellables.insert(cancellable)
+    }
+
+   private func _image(contractAddress: AlphaWallet.Address, server: RPCServer, name: String, type: TokenType, balance: NonFungibleFromJson?, size: GoogleContentSize, contractDefinedImage: UIImage?, colors: [UIColor], staticOverlayIcon: UIImage?, blockChainNameColor: UIColor, serverIconImage: UIImage?) -> TokenImagePublisher {
         let subject: CurrentValueSubject<TokenImage?, Never>
         let key = "\(contractAddress.eip55String)-\(server.chainID)-\(size.rawValue)"
         if let sub = subscribables[key] {
@@ -215,7 +175,7 @@ public class TokenImageFetcherImpl: TokenImageFetcher {
         }
 
         if inFlightTasks[key] == nil {
-            inFlightTasks[key] = Task { @MainActor in
+            inFlightTasks[key] = Task {
                 if let image = try? await self.fetchFromAssetGitHubRepo(.alphaWallet, contractAddress: contractAddress) {
                     let tokenImage = TokenImage(image: .image(.loaded(image: image)), isFinal: true, overlayServerIcon: staticOverlayIcon)
                     subject.send(tokenImage)
@@ -270,6 +230,64 @@ public class TokenImageFetcherImpl: TokenImageFetcher {
     }
 }
 
+extension TokenImageFetcherImpl {
+    enum functional {}
+}
+
+fileprivate extension TokenImageFetcherImpl.functional {
+    static func programmaticallyGeneratedIconImage(for contractAddress: AlphaWallet.Address, server: RPCServer, colors: [UIColor], blockChainNameColor: UIColor) -> UIImage {
+        let backgroundColor = symbolBackgroundColor(for: contractAddress, server: server, colors: colors, blockChainNameColor: blockChainNameColor)
+        return UIImage.tokenSymbolBackgroundImage(backgroundColor: backgroundColor)
+    }
+
+    static func symbolBackgroundColor(for contractAddress: AlphaWallet.Address, server: RPCServer, colors: [UIColor], blockChainNameColor: UIColor) -> UIColor {
+        if contractAddress == Constants.nativeCryptoAddressInDatabase {
+            return blockChainNameColor
+        } else {
+            let index: Int
+            //We just need a random number from the contract. The LSBs are more random than the MSBs
+            if let i = Int(contractAddress.eip55String.substring(from: 37), radix: 16) {
+                index = i % colors.count
+            } else {
+                index = 0
+            }
+            return colors[index]
+        }
+    }
+
+    static func programmaticallyGenerateIcon(for contractAddress: AlphaWallet.Address, type: TokenType, server: RPCServer, symbol: String, colors: [UIColor], staticOverlayIcon: UIImage?, blockChainNameColor: UIColor) -> TokenImage? {
+        guard let i = [Constants.Image.numberOfCharactersOfSymbolToShowInIcon, symbol.count].min() else { return nil }
+        let symbol = symbol.substring(to: i)
+        let rawImage: UIImage?
+        let overlayServerIcon: UIImage?
+
+        switch type {
+        case .erc1155, .erc721, .erc721ForTickets:
+            rawImage = nil
+            overlayServerIcon = staticOverlayIcon
+        case .erc20, .erc875:
+            rawImage = programmaticallyGeneratedIconImage(
+                    for: contractAddress,
+                    server: server,
+                    colors: colors,
+                    blockChainNameColor: blockChainNameColor)
+
+            overlayServerIcon = staticOverlayIcon
+        case .nativeCryptocurrency:
+            rawImage = programmaticallyGeneratedIconImage(
+                    for: contractAddress,
+                    server: server,
+                    colors: colors,
+                    blockChainNameColor: blockChainNameColor)
+
+            overlayServerIcon = nil
+        }
+        let imageSource = rawImage.flatMap { RawImage.generated(image: $0, symbol: symbol) } ?? .none
+
+        return .init(image: .image(imageSource), isFinal: false, overlayServerIcon: overlayServerIcon)
+    }
+}
+
 class GithubAssetsURLResolver {
     static let file = "logo.png"
 
@@ -290,46 +308,36 @@ class GithubAssetsURLResolver {
 
 public typealias ImagePublisher = AnyPublisher<ImageOrWebImageUrl<Image>?, Never>
 
-public class RPCServerImageFetcher {
+public actor RPCServerImageFetcher {
     public static var instance = RPCServerImageFetcher()
-    private let subscribables: AtomicDictionary<Int, ImagePublisher> = .init()
+    private var cachedPublishers: [Int: ImagePublisher] = .init()
+    private var cancellables: Set<AnyCancellable> = .init()
 
-    public func image(server: RPCServer, iconImage: UIImage) -> ImagePublisher {
-        if let sub = subscribables[server.chainID] {
+    public nonisolated func image(server: RPCServer, iconImage: UIImage) -> ImagePublisher {
+        //Careful to not use PassthroughSubject due to how upstream works
+        let subject: CurrentValueSubject<ImageOrWebImageUrl<Image>?, Never> = .init(nil)
+        Task {
+            let sourcePublisher = await self._image(server: server, iconImage: iconImage)
+            let cancellable = sourcePublisher.sink { image in
+                subject.send(image)
+            }
+            await storeCancellable(cancellable)
+        }
+        return subject.eraseToAnyPublisher()
+    }
+
+    //Need this so we can access `cancellables` in the actor's isolated context from within a `Task`
+    private func storeCancellable(_ cancellable: AnyCancellable) {
+        cancellables.insert(cancellable)
+    }
+
+    private func _image(server: RPCServer, iconImage: UIImage) -> ImagePublisher {
+        if let sub = cachedPublishers[server.chainID] {
             return sub
         } else {
             let sub = CurrentValueSubject<ImageOrWebImageUrl<Image>?, Never>(.image(iconImage))
-            subscribables[server.chainID] = sub.eraseToAnyPublisher()
-
+            cachedPublishers[server.chainID] = sub.eraseToAnyPublisher()
             return sub.eraseToAnyPublisher()
         }
-    }
-}
-
-private func programmaticallyGeneratedIconImage(for contractAddress: AlphaWallet.Address,
-                                                server: RPCServer,
-                                                colors: [UIColor],
-                                                blockChainNameColor: UIColor) -> UIImage {
-
-    let backgroundColor = symbolBackgroundColor(for: contractAddress, server: server, colors: colors, blockChainNameColor: blockChainNameColor)
-    return UIImage.tokenSymbolBackgroundImage(backgroundColor: backgroundColor)
-}
-
-private func symbolBackgroundColor(for contractAddress: AlphaWallet.Address,
-                                   server: RPCServer,
-                                   colors: [UIColor],
-                                   blockChainNameColor: UIColor) -> UIColor {
-
-    if contractAddress == Constants.nativeCryptoAddressInDatabase {
-        return blockChainNameColor
-    } else {
-        let index: Int
-        //We just need a random number from the contract. The LSBs are more random than the MSBs
-        if let i = Int(contractAddress.eip55String.substring(from: 37), radix: 16) {
-            index = i % colors.count
-        } else {
-            index = 0
-        }
-        return colors[index]
     }
 }

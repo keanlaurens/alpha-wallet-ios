@@ -5,10 +5,12 @@ import RealmSwift
 import Combine
 
 public final class BrowserHistoryStorage {
+    //TODO should use a RealmStore.performInBackground or similar
     private let realm: Realm
     private let ignoreUrls: Set<URL>
 
     public var historiesChangeset: AnyPublisher<ChangeSet<[BrowserHistoryRecord]>, Never> {
+        //TODO speed up. why doesn't this use performSync?
         return realm.objects(History.self)
             .sorted(byKeyPath: "createdAt", ascending: false)
             .changesetPublisher
@@ -23,7 +25,7 @@ public final class BrowserHistoryStorage {
                 }
             }.eraseToAnyPublisher()
     }
-    
+
     public var firstHistoryRecord: BrowserHistoryRecord? {
         histories.first
     }

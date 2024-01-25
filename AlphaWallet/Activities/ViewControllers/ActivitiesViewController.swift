@@ -21,14 +21,7 @@ class ActivitiesViewController: UIViewController {
     private var activitiesView: ActivitiesView
     weak var delegate: ActivitiesViewControllerDelegate?
 
-    init(analytics: AnalyticsLogger,
-         keystore: Keystore,
-         wallet: Wallet,
-         viewModel: ActivitiesViewModel,
-         sessionsProvider: SessionsProvider,
-         assetDefinitionStore: AssetDefinitionStore,
-         tokenImageFetcher: TokenImageFetcher) {
-
+    init(analytics: AnalyticsLogger, keystore: Keystore, wallet: Wallet, viewModel: ActivitiesViewModel, sessionsProvider: SessionsProvider, assetDefinitionStore: AssetDefinitionStore, tokenImageFetcher: TokenImageFetcher) {
         self.viewModel = viewModel
         searchController = UISearchController(searchResultsController: nil)
         activitiesView = ActivitiesView(
@@ -159,30 +152,7 @@ extension ActivitiesViewController {
     private func configureSearchBarOnce() {
         guard !isSearchBarConfigured else { return }
         isSearchBarConfigured = true
-        
+
         UISearchBar.configure(searchBar: searchController.searchBar)
-    }
-}
-
-extension ActivitiesViewController {
-    enum functional {}
-}
-
-extension ActivitiesViewController.functional {
-
-    static func headerView(for section: Int, viewModel: ActivitiesViewModel) -> UIView {
-        let container = UIView()
-        container.backgroundColor = viewModel.headerBackgroundColor
-        let title = UILabel()
-        title.text = viewModel.titleForHeader(in: section)
-        title.sizeToFit()
-        title.textColor = viewModel.headerTitleTextColor
-        title.font = viewModel.headerTitleFont
-        container.addSubview(title)
-        title.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            title.anchorsConstraint(to: container, edgeInsets: .init(top: 18, left: 20, bottom: 16, right: 0))
-        ])
-        return container
     }
 }

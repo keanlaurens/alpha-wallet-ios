@@ -22,7 +22,7 @@ public final class LegacyGasPriceEstimator: NSObject, GasPriceEstimator {
     private let estimatesSubject: CurrentValueSubject<LegacyGasEstimates, Never>
     private let initialGasPrice: BigUInt?
     private var cancellable = Set<AnyCancellable>()
-    private lazy var scheduler = Scheduler(provider: estimatesProvider, useCountdownTimer: true)
+    private lazy var scheduler = Scheduler(provider: estimatesProvider, refreshAggressively: true)
     private let estimatesProvider: LegacyEstimatesSchedulerProvider
 
     public private(set) var selectedGasSpeed: GasSpeed = .standard
@@ -126,7 +126,8 @@ public final class LegacyGasPriceEstimator: NSObject, GasPriceEstimator {
         var errors: [Error] = []
         var warnings: [Warning] = []
 
-        if gasPrice <= 0 {
+        //We explicitly allow gas price to be zero because some private chains use that
+        if gasPrice < 0 {
             errors += [ConfigureTransactionError.gasPriceTooLow]
         }
 
@@ -188,7 +189,7 @@ extension LegacyGasPriceEstimator {
         private let blockchainProvider: BlockchainProvider
         private let networking: BlockchainExplorer
 
-        let name: String = ""
+        var name: String { "LegacyEstimatesSchedulerProvider.\(blockchainProvider.server)" }
         let interval: TimeInterval
         var operation: AnyPublisher<Void, PromiseError> {
             estimateGasPrice()

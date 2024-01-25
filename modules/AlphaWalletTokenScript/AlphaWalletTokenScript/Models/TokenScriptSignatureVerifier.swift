@@ -3,6 +3,7 @@
 import Foundation
 import Combine
 import AlphaWalletAddress
+import AlphaWalletAttestation
 import AlphaWalletCore
 import AlphaWalletLogger
 import PromiseKit
@@ -14,79 +15,14 @@ public protocol TokenScriptSignatureVerifieble {
     func verifyXMLSignatureViaAPI(xml: String, completion: @escaping (TokenScriptSignatureVerifier.VerifierResult) -> Void)
 }
 
-public class BaseTokenScriptStatusResolver: TokenScriptStatusResolver {
-
-    private let backingStore: AssetDefinitionBackingStore
-    private let signatureVerifier: TokenScriptSignatureVerifieble
-
-    public init(backingStore: AssetDefinitionBackingStore, signatureVerifier: TokenScriptSignatureVerifieble) {
-        self.backingStore = backingStore
-        self.signatureVerifier = signatureVerifier
-    }
-
-    public func computeTokenScriptStatus(forContract contract: AlphaWallet.Address, xmlString: String, isOfficial: Bool) -> Promise<TokenLevelTokenScriptDisplayStatus> {
-        if backingStore.hasConflictingFile(forContract: contract) {
-            return .value(.type2BadTokenScript(isDebugMode: !isOfficial, error: .tokenScriptType2ConflictingFiles, reason: .conflictWithAnotherFile))
-        }
-        if backingStore.hasOutdatedTokenScript(forContract: contract) {
-            return .value(.type2BadTokenScript(isDebugMode: !isOfficial, error: .tokenScriptType2OldSchemaVersion, reason: .oldTokenScriptVersion))
-        }
-        if xmlString.nilIfEmpty == nil {
-            return .value(.type0NoTokenScript)
-        }
-
-        switch XMLHandler.functional.checkTokenScriptSchema(xmlString) {
-        case .supportedTokenScriptVersion:
-            return firstly {
-                verificationType(forXml: xmlString)
-            }.then { [backingStore] verificationStatus -> Promise<TokenLevelTokenScriptDisplayStatus> in
-                return Promise { seal in
-                    backingStore.writeCacheTokenScriptSignatureVerificationType(verificationStatus, forContract: contract, forXmlString: xmlString)
-
-                    switch verificationStatus {
-                    case .verified(let domainName):
-                    seal.fulfill(.type1GoodTokenScriptSignatureGoodOrOptional(isDebugMode: !isOfficial, isSigned: true, validatedDomain: domainName, error: .tokenScriptType1SupportedAndSigned))
-                    case .verificationFailed:
-                        seal.fulfill(.type2BadTokenScript(isDebugMode: !isOfficial, error: .tokenScriptType2InvalidSignature, reason: .invalidSignature))
-                    case .notCanonicalizedAndNotSigned:
-                        //But should always be debug mode because we can't have a non-canonicalized XML from the official repo
-                        seal.fulfill(.type1GoodTokenScriptSignatureGoodOrOptional(isDebugMode: !isOfficial, isSigned: false, validatedDomain: nil, error: .tokenScriptType1SupportedNotCanonicalizedAndUnsigned))
-                    }
-                }
-            }
-        case .unsupportedTokenScriptVersion(let isOld):
-            if isOld {
-                return .value(.type2BadTokenScript(isDebugMode: !isOfficial, error: .custom("type 2 or bad? Mismatch version. Old version"), reason: .oldTokenScriptVersion))
-            } else {
-                preconditionFailure("Not expecting an unsupported and new version of TokenScript schema here")
-                return .value(.type2BadTokenScript(isDebugMode: !isOfficial, error: .custom("type 2 or bad? Mismatch version. Unknown schema"), reason: nil))
-            }
-        case .unknownXml:
-            preconditionFailure("Not expecting an unknown XML here when checking TokenScript schema")
-            return .value(.type2BadTokenScript(isDebugMode: !isOfficial, error: .custom("unknown. Maybe empty invalid? Doesn't even include something that might be our schema"), reason: nil))
-        case .others:
-            preconditionFailure("Not expecting an unknown error when checking TokenScript schema")
-            return .value(.type2BadTokenScript(isDebugMode: !isOfficial, error: .custom("Not XML?"), reason: nil))
-        }
-    }
-
-    private func verificationType(forXml xmlString: String) -> PromiseKit.Promise<TokenScriptSignatureVerificationType> {
-        if let cachedVerificationType = backingStore.getCacheTokenScriptSignatureVerificationType(forXmlString: xmlString) {
-            return .value(cachedVerificationType)
-        } else {
-            return signatureVerifier.verificationType(forXml: xmlString)
-        }
-    }
-}
-
-public final class TokenScriptSignatureVerifier: TokenScriptSignatureVerifieble {
-    private let tokenScriptFilesProvider: BaseTokenScriptFilesProvider
+//TODO improve actor/nonisolated? Not important at the moment since we don't verify signatures at the moment
+public final actor TokenScriptSignatureVerifier: TokenScriptSignatureVerifieble {
+    private let baseTokenScriptFiles: BaseTokenScriptFiles
     private let networking: TokenScriptSignatureNetworking
-    private let queue = DispatchQueue(label: "org.alphawallet.swift.TokenScriptSignatureVerifier")
     private let reachability: ReachabilityManagerProtocol
-    private let cancellable: AtomicDictionary<String, AnyCancellable> = .init()
+    private var cancellable: [String: AnyCancellable] = .init()
     //TODO: remove later when replace with publisher, needed to add waiting for completion of single api call, to avoid multiple uploading of same file
-    private let completions: AtomicDictionary<String, [((VerifierResult) -> Void)?]> = .init()
+    private var completions: [String: [((VerifierResult) -> Void)?]] = .init()
     private let features: TokenScriptFeatures
 
     public var retryBehavior: RetryBehavior<RunLoop> = .delayed(retries: UInt.max, time: 10)
@@ -102,17 +38,32 @@ public final class TokenScriptSignatureVerifier: TokenScriptSignatureVerifieble 
         }
     }
 
-    public init(tokenScriptFilesProvider: BaseTokenScriptFilesProvider, networkService: NetworkService, features: TokenScriptFeatures, reachability: ReachabilityManagerProtocol = ReachabilityManager()) {
-        self.tokenScriptFilesProvider = tokenScriptFilesProvider
+    public init(baseTokenScriptFiles: BaseTokenScriptFiles, networkService: NetworkService, features: TokenScriptFeatures, reachability: ReachabilityManagerProtocol = ReachabilityManager()) {
+        self.baseTokenScriptFiles = baseTokenScriptFiles
         self.reachability = reachability
         self.networking = TokenScriptSignatureNetworking(networkService: networkService)
         self.features = features
     }
 
-    public func verificationType(forXml xmlString: String) -> Promise<TokenScriptSignatureVerificationType> {
+    public nonisolated func verificationType(forXml xmlString: String) -> Promise<TokenScriptSignatureVerificationType> {
+        return Promise<TokenScriptSignatureVerificationType> { seal in
+            Task {
+                let promise = await self._verificationType(forXml: xmlString)
+                firstly {
+                    promise
+                }.done {
+                   seal.fulfill($0)
+                }.catch {
+                    seal.reject($0)
+                }
+            }
+        }
+    }
+
+    private func _verificationType(forXml xmlString: String) -> Promise<TokenScriptSignatureVerificationType> {
         return Promise { seal in
             if features.isActivityEnabled {
-                if tokenScriptFilesProvider.containsTokenScriptFile(for: xmlString) {
+                if baseTokenScriptFiles.containsBaseTokenScriptFile(for: xmlString) {
                     seal.fulfill(.verified(domainName: "*.aw.app"))
                     return
                 }
@@ -137,15 +88,20 @@ public final class TokenScriptSignatureVerifier: TokenScriptSignatureVerifieble 
         }
     }
 
+    public nonisolated func verifyXMLSignatureViaAPI(xml: String, completion: @escaping (VerifierResult) -> Void) {
+        Task {
+            await self._verifyXMLSignatureViaAPI(xml: xml, completion: completion)
+        }
+    }
+
     //TODO log reasons for failures `completion(.failed)` as well as those that triggers retries in in-app Console
-    public func verifyXMLSignatureViaAPI(xml: String, completion: @escaping (VerifierResult) -> Void) {
+    private func _verifyXMLSignatureViaAPI(xml: String, completion: @escaping (VerifierResult) -> Void) {
         add(callback: completion, xml: xml)
 
         guard cancellable[xml] == nil else { return }
 
         cancellable[xml] = reachability
             .networkBecomeReachablePublisher
-            .receive(on: queue)
             .map { _ in xml }
             .setFailureType(to: SessionTaskError.self)
             .flatMapLatest { [networking, retryBehavior, retryPredicate] xml -> AnyPublisher<VerifierResult, SessionTaskError> in
@@ -154,25 +110,22 @@ public final class TokenScriptSignatureVerifier: TokenScriptSignatureVerifieble 
                     .retry(retryBehavior, shouldOnlyRetryIf: retryPredicate, scheduler: RunLoop.main)
                     .eraseToAnyPublisher()
             }.replaceError(with: .failed)
-            .receive(on: queue)
             .sink(receiveCompletion: { _ in
                 self.cancellable[xml] = nil
             }, receiveValue: { result in
-                DispatchQueue.main.async {
-                    self.fulfill(for: xml, result: result)
-                }
+                self.fulfill(for: xml, result: result)
             })
     }
 
     private func add(callback: ((VerifierResult) -> Void)?, xml: String) {
-        var callbacks = completions[xml] ?? []
+        var callbacks = completions[xml, default: []]
         callbacks.append(callback)
 
         completions[xml] = callbacks
     }
 
     private func fulfill(for xml: String, result: TokenScriptSignatureVerifier.VerifierResult) {
-        var callbacks = completions[xml] ?? []
+        var callbacks = completions[xml, default: []]
         callbacks.forEach { $0?(result) }
     }
 }

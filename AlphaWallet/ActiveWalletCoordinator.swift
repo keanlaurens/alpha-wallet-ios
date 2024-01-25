@@ -1,6 +1,7 @@
 import UIKit
 import PromiseKit
 import Combine
+import AlphaWalletAttestation
 import AlphaWalletCore
 import AlphaWalletFoundation
 import AlphaWalletLogger
@@ -67,6 +68,7 @@ class ActiveWalletCoordinator: NSObject, Coordinator {
     private let transactionsService: TransactionsService
     private let tokensPipeline: TokensProcessingPipeline
     private let pushNotificationsService: PushNotificationsService
+    private lazy var attestationsStore: AttestationsStore = AttestationsStore(wallet: wallet.address)
 
     var transactionCoordinator: TransactionsCoordinator? {
         return coordinators.compactMap { $0 as? TransactionsCoordinator }.first
@@ -208,7 +210,9 @@ class ActiveWalletCoordinator: NSObject, Coordinator {
         blockscanChatService.delegate = self
 
         self.keystore.recentlyUsedWallet = wallet
-        crashlytics.trackActiveWallet(wallet: wallet)
+        Task {
+            await crashlytics.trackActiveWallet(wallet: wallet)
+        }
         caip10AccountProvidable.set(activeWallet: wallet)
         localNotificationsService.register(source: transactionNotificationSource)
 
@@ -322,7 +326,8 @@ class ActiveWalletCoordinator: NSObject, Coordinator {
             tokensFilter: tokensFilter,
             currencyService: currencyService,
             tokenImageFetcher: tokenImageFetcher,
-            serversProvider: serversProvider)
+            serversProvider: serversProvider,
+            attestationsStore: attestationsStore)
 
         coordinator.rootViewController.tabBarItem = ActiveWalletViewModel.Tabs.tokens.tabBarItem
         coordinator.delegate = self
@@ -533,6 +538,43 @@ class ActiveWalletCoordinator: NSObject, Coordinator {
         } else {
             showPaymentFlow(for: .request, server: config.anyEnabledServer(), navigationController: navigationController)
         }
+    }
+
+    private func ensureServerEnabled(_ server: AlphaWalletCore.RPCServer) {
+        if serversProvider.enabledServers.contains(server) {
+            //no-op
+        } else {
+            let servers = serversProvider.enabledServers + [server]
+            serversProvider.enabledServers = servers
+        }
+    }
+
+    private func importAttestation(_ attestation: Attestation, intoWallet address: AlphaWallet.Address) async -> Bool {
+        //TODO not right since the yet-to-be-found-attestation to be replaced might not use the same TokenScript file and might not use the same identifying fields. Probably keep it this way for now. But we can fix this by running through the XMLHandler for each attestation and fetching the correct fields
+        let collectionIdFieldNames: [String]
+        let identifyingFieldNames: [String]
+        await assetDefinitionStore.fetchXMLForAttestationIfScriptURL(attestation)
+
+        if let xmlHandler = assetDefinitionStore.xmlHandler(forAttestation: attestation) {
+            collectionIdFieldNames = xmlHandler.computeCollectionIdFieldNames(forAttestation: attestation)
+            identifyingFieldNames = xmlHandler.computeAttestationIdentifyingFieldNames(forAttestation: attestation)
+        } else {
+            collectionIdFieldNames = []
+            identifyingFieldNames = []
+        }
+
+        //We allow importing an attestation into a wallet (as long as the attestation receiver logic allows it) even if the wallet is not active
+        let isSuccessful = await attestationsStore.addAttestation(attestation, forWallet: address, collectionIdFieldNames: collectionIdFieldNames, identifyingFieldNames: identifyingFieldNames)
+        if isSuccessful {
+            SmartLayerPass().handleAddedAttestation(attestation, attestationStore: attestationsStore)
+            ensureServerEnabled(attestation.server)
+            //TODO shouldn't switch tabs if imported to a wallet that is different from active wallet. Just let user know
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.showTab(.tokens)
+                self?.tokensCoordinator?.rootViewController.selectTab(withFilter: .attestations)
+            }
+        }
+        return isSuccessful
     }
 }
 
@@ -763,8 +805,8 @@ extension ActiveWalletCoordinator: ActivityViewControllerDelegate {
             .publisher(queue: .main)
     }
 
-    func reinject(viewController: ActivityViewController) {
-        activitiesPipeLine.reinject(activity: viewController.viewModel.activity)
+    func reinject(viewController: ActivityViewController) async {
+        await activitiesPipeLine.reinject(activity: viewController.viewModel.activity)
     }
 
     func goToToken(viewController: ActivityViewController) {
@@ -775,41 +817,45 @@ extension ActiveWalletCoordinator: ActivityViewControllerDelegate {
     }
 
     func speedupTransaction(transactionId: String, server: RPCServer, viewController: ActivityViewController) {
-        guard let transaction = transactionsDataStore.transaction(withTransactionId: transactionId, forServer: server) else { return }
-        guard let session = sessionsProvider.session(for: transaction.server) else { return }
-        guard let coordinator = ReplaceTransactionCoordinator(
-            analytics: analytics,
-            domainResolutionService: domainResolutionService,
-            keystore: keystore,
-            presentingViewController: viewController,
-            session: session,
-            transaction: transaction,
-            mode: .speedup,
-            tokensService: tokensPipeline,
-            networkService: networkService) else { return }
+        Task { @MainActor in
+            guard let transaction = await transactionsDataStore.transaction(withTransactionId: transactionId, forServer: server) else { return }
+            guard let session = sessionsProvider.session(for: transaction.server) else { return }
+            guard let coordinator = ReplaceTransactionCoordinator(
+                analytics: analytics,
+                domainResolutionService: domainResolutionService,
+                keystore: keystore,
+                presentingViewController: viewController,
+                session: session,
+                transaction: transaction,
+                mode: .speedup,
+                tokensService: tokensPipeline,
+                networkService: networkService) else { return }
 
-        coordinator.delegate = self
-        coordinator.start()
-        addCoordinator(coordinator)
+            coordinator.delegate = self
+            coordinator.start()
+            addCoordinator(coordinator)
+        }
     }
 
     func cancelTransaction(transactionId: String, server: RPCServer, viewController: ActivityViewController) {
-        guard let transaction = transactionsDataStore.transaction(withTransactionId: transactionId, forServer: server) else { return }
-        guard let session = sessionsProvider.session(for: transaction.server) else { return }
-        guard let coordinator = ReplaceTransactionCoordinator(
-            analytics: analytics,
-            domainResolutionService: domainResolutionService,
-            keystore: keystore,
-            presentingViewController: viewController,
-            session: session,
-            transaction: transaction,
-            mode: .cancel,
-            tokensService: tokensPipeline,
-            networkService: networkService) else { return }
+        Task { @MainActor in
+            guard let transaction = await transactionsDataStore.transaction(withTransactionId: transactionId, forServer: server) else { return }
+            guard let session = sessionsProvider.session(for: transaction.server) else { return }
+            guard let coordinator = ReplaceTransactionCoordinator(
+                analytics: analytics,
+                domainResolutionService: domainResolutionService,
+                keystore: keystore,
+                presentingViewController: viewController,
+                session: session,
+                transaction: transaction,
+                mode: .cancel,
+                tokensService: tokensPipeline,
+                networkService: networkService) else { return }
 
-        coordinator.delegate = self
-        coordinator.start()
-        addCoordinator(coordinator)
+            coordinator.delegate = self
+            coordinator.start()
+            addCoordinator(coordinator)
+        }
     }
 
     func goToTransaction(viewController: ActivityViewController) {
@@ -868,7 +914,9 @@ extension ActiveWalletCoordinator: TokensCoordinatorDelegate {
 
     func viewWillAppearOnce(in coordinator: TokensCoordinator) {
         tokensService.refreshBalance(updatePolicy: .all)
-        activitiesPipeLine.start()
+        Task {
+            await activitiesPipeLine.start()
+        }
     }
 
     func blockieSelected(in coordinator: TokensCoordinator) {
@@ -1034,6 +1082,33 @@ extension ActiveWalletCoordinator: TokensCoordinatorDelegate {
         guard self.wallet != account else { return }
         restartUI(withReason: .walletChange, account: account)
     }
+
+    func importAttestation(_ attestation: Attestation) async -> Bool {
+        if let recipient = attestation.recipient {
+            if recipient.isNull {
+                infoLog("Attestation: \(attestation) for wallet: \(String(describing: attestation.recipient)) recipient is null address. Importing…")
+                return await importAttestation(attestation, intoWallet: wallet.address)
+            } else if recipient == wallet.address {
+                infoLog("Attestation: \(attestation) for wallet: \(String(describing: attestation.recipient)) recipient matches current wallet. Importing…")
+                return await importAttestation(attestation, intoWallet: wallet.address)
+            } else if keystore.wallets.contains(where: { $0.address == recipient }) {
+                infoLog("Attestation: \(attestation) for wallet: \(String(describing: attestation.recipient)) recipient matches inactive wallet. Importing…")
+                //TODO have a better UX, show user that it's imported, but to another wallet?
+                return await importAttestation(attestation, intoWallet: recipient)
+            } else {
+                if config.development.shouldIgnoreAttestationRecipientAndImportToCurrentWallet {
+                    infoLog("Attestation: \(attestation) for wallet: \(String(describing: attestation.recipient)) recipient doesn't match wallet. Importing because overridden by development flag…")
+                    return await importAttestation(attestation, intoWallet: wallet.address)
+                } else {
+                    infoLog("Attestation: \(attestation) for wallet: \(String(describing: attestation.recipient)) recipient doesn't match wallet. Skip import")
+                    return false
+                }
+            }
+        } else {
+            infoLog("Attestation: \(attestation) for wallet: \(String(describing: attestation.recipient)) recipient is nil. Importing…")
+            return await importAttestation(attestation, intoWallet: wallet.address)
+        }
+    }
 }
 
 extension ActiveWalletCoordinator: SelectTokenCoordinatorDelegate {
@@ -1125,7 +1200,6 @@ extension ActiveWalletCoordinator: DappBrowserCoordinatorDelegate {
                                 requester: RequesterViewModel?,
                                 transaction: UnconfirmedTransaction,
                                 configuration: TransactionType.Configuration) -> AnyPublisher<Data, PromiseError> {
-
         infoLog("[\(source)] signTransaction: \(transaction) type: \(configuration.confirmType)")
 
         return firstly {
@@ -1151,7 +1225,7 @@ extension ActiveWalletCoordinator: DappBrowserCoordinatorDelegate {
         }.then { shouldSend -> Promise<ConfirmResult> in
             guard shouldSend else { return .init(error: JsonRpcError.requestRejected) }
             let prompt = R.string.localizable.keystoreAccessKeySign()
-            let sender = SendTransaction(session: session, keystore: self.keystore, confirmType: .signThenSend, config: session.config, analytics: self.analytics, prompt: prompt)
+            let sender = SignMaySendTransaction(session: session, keystore: self.keystore, confirmType: .signThenSend, config: session.config, analytics: self.analytics, prompt: prompt)
             return Promise {
                 try await sender.send(rawTransaction: transaction)
             }

@@ -18,7 +18,7 @@ extension Constants {
             }
             let lines = fileContents.components(separatedBy: .newlines)
             let keyValues: [(String, String)] = lines.compactMap { line -> (String, String)? in
-                Constants.Credentials.functional.extractKeyValueCredentials(line)
+                Constants.Credentials.extractKeyValueCredentials(line)
             }
             let dict = Dictionary(uniqueKeysWithValues: keyValues)
             debugLog("[Credentials] Loaded .credentials file found for development with key count: \(dict.count)")
@@ -49,6 +49,7 @@ extension Constants {
         static let avalancheExplorerApiKey = env("AVALANCHEEXPLORERAPIKEY")
         static let arbiscanExplorerApiKey = env("ARBISCANEXPLORERAPIKEY")
         static let xDaiExplorerKey = env("XDAIEXPLORERKEY")
+        static let optimisticExplorerKey = env("OPTIMISTICEXPLORERKEY")
         static let paperTrail = (host: env("PAPERTRAILHOST") ?? "", port: (env("PAPERTRAILPORT") ?? "").toInt() ?? 0)
         static let openseaKey = env("OPENSEAKEY") ?? nil
         static let rampApiKey = env("RAMPAPIKEY") ?? "j5wr7oqktym7z69yyf84bb8a6cqb7qfu5ynmeyvn"
@@ -60,15 +61,13 @@ extension Constants {
         static let covalentApiKey = env("COVALENTAPIKEY") ?? "ckey_7ee61be7f8364ba784f697510bd"
         static let klaytnRpcNodeCypressKey = env("KLAYTNRPCNODECYPRESSKEY") ?? ""
         static let klaytnRpcNodeBaobabKey = env("KLAYTNRPCNODEBAOBABKEY") ?? ""
+        public static let smartLayerPassAuthDev = env("SMARTLAYERPASSAUTHDEV") ?? ""
+        public static let smartLayerPassAuthProd = env("SMARTLAYERPASSAUTHPROD") ?? ""
         public static let notificationsApiKey = env("NOTIFICATIONSAPIKEY")
     }
 }
 
 extension Constants.Credentials {
-    public enum functional {}
-}
-
-extension Constants.Credentials.functional {
     public static func extractKeyValueCredentials(_ line: String) -> (key: String, value: String)? {
         let keyValue = line.components(separatedBy: "=")
         if keyValue.count == 2 {

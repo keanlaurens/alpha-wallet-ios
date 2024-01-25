@@ -6,10 +6,11 @@
 //
 
 import Foundation
+import AlphaWalletCore
 import Combine
 
 extension RPCServer {
-    var autodetectTokenTypes: [Eip20TokenType] {
+    var autodetectTokenTypes: [EipTokenType] {
         return [.erc20, .erc721, .erc1155]
     }
 }
@@ -51,11 +52,13 @@ public class ClientSideTokenSourceProvider: TokenSourceProvider {
             .eraseToAnyPublisher()
     }()
 
-    public var tokens: [Token] { tokensDataStore.tokens(for: [session.server]) }
-
     public var tokensPublisher: AnyPublisher<[Token], Never> {
         let initialOrForceSnapshot = Publishers.Merge(Just<Void>(()), refreshSubject)
-            .map { [tokensDataStore, session] _ in tokensDataStore.tokens(for: [session.server]) }
+            .flatMap { [tokensDataStore, session] _ in
+                asFuture {
+                    await tokensDataStore.tokens(for: [session.server])
+                }
+            }
             .eraseToAnyPublisher()
 
         let addedOrChanged = tokensDataStore.enabledTokensPublisher(for: [session.server])
@@ -82,11 +85,17 @@ public class ClientSideTokenSourceProvider: TokenSourceProvider {
         tokensAutodetector
             .detectedTokensOrContracts
             .map { $0.map { AddOrUpdateTokenAction($0) } }
-            .sink { [tokensDataStore] in tokensDataStore.addOrUpdate(with: $0) }
+            .sink { [tokensDataStore] action in
+                Task {
+                    await tokensDataStore.addOrUpdate(with: action)
+                }
+            }
             .store(in: &cancelable)
 
         //NOTE: disabled as delating instances from db caused crash
-        //tokensAutodetector.start()
+        Task {
+            await tokensAutodetector.start()
+        }
 
         balanceFetcher.delegate = self
     }
@@ -107,11 +116,19 @@ public class ClientSideTokenSourceProvider: TokenSourceProvider {
     public func refreshBalance(for tokens: [Token]) {
         balanceFetcher.refreshBalance(for: tokens)
     }
+
+    public func getTokens() async -> [Token] {
+        await tokensDataStore.tokens(for: [session.server])
+    }
 }
 
 extension ClientSideTokenSourceProvider: TokenBalanceFetcherDelegate {
     public func didUpdateBalance(value actions: [AddOrUpdateTokenAction], in fetcher: TokenBalanceFetcher) {
-        crashlytics.logLargeNftJsonFiles(for: actions, fileSizeThreshold: 10)
-        tokensDataStore.addOrUpdate(with: actions)
+        Task {
+            await crashlytics.logLargeNftJsonFiles(for: actions, fileSizeThreshold: 10)
+        }
+        Task {
+            await tokensDataStore.addOrUpdate(with: actions)
+        }
     }
 }

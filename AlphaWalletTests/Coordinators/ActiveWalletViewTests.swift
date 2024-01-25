@@ -18,6 +18,10 @@ final class FakeApiTransporter: ApiTransporter {
         return .empty()
     }
 
+    func dataTask(_ request: URLRequestConvertible) async throws -> URLRequest.Response {
+        return (data: Data(), response: HTTPURLResponse())
+    }
+
     func dataPublisher(_ request: URLRequestConvertible) -> AnyPublisher<Alamofire.DataResponsePublisher<Data>.Output, SessionTaskError> {
         return .empty()
     }
@@ -76,7 +80,7 @@ extension AnyCAIP10AccountProvidable {
 
 extension AssetDefinitionStore {
     static func make() -> AssetDefinitionStore {
-        return .init(networkService: FakeNetworkService(), blockchainsProvider: BlockchainsProviderImplementation.make(servers: [.main]), features: TokenScriptFeatures())
+        return .init(networkService: FakeNetworkService(), blockchainsProvider: BlockchainsProviderImplementation.make(servers: [.main]), features: TokenScriptFeatures(), resetFolders: false)
     }
 }
 
@@ -544,6 +548,12 @@ class ActiveWalletViewTests: XCTestCase {
     }
 }
 // swiftlint:enable type_body_length
+
+class FakeFetchTokenScriptFiles: FetchTokenScriptFiles {
+    func start() {
+        //no-op
+    }
+}
 
 import AlphaWalletNotifications
 

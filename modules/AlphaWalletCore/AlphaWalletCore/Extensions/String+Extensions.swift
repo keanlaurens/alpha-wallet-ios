@@ -104,4 +104,40 @@ extension String {
             return "0x" + self
         }
     }
+
+    public var dropLeading04: String {
+        if count > 2 && substring(with: 0..<2) == "04" {
+            return String(dropFirst(2))
+        }
+        return self
+    }
+
+    //Base64 encoding must be in multiples of 4. `Data(base64Encoded:)` doesn't parse it otherwise
+    public var paddedForBase64Encoded: String {
+        let paddingCount = (4 - (count % 4)) % 4
+        if paddingCount > 0 {
+            return self + String(repeating: "=", count: paddingCount)
+        } else {
+            return self
+        }
+    }
+
+    public var isHexEncoded: Bool {
+        guard starts(with: "0x") else {
+            return false
+        }
+        let regex = try! NSRegularExpression(pattern: "^0x[0-9A-Fa-f]*$")
+        if regex.matches(in: self, range: NSRange(startIndex..., in: self)).isEmpty {
+            return false
+        }
+        return true
+    }
+
+    public var asSignableMessageData: Data {
+        if self.hasPrefix("0x") {
+            return Data(_hex: self)
+        } else {
+            return Data(_hex: self.hex)
+        }
+    }
 }

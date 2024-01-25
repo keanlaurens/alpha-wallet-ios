@@ -5,11 +5,12 @@
 //  Created by Vladyslav Shepitko on 12.05.2022.
 //
 
+import Combine
 import Foundation
 import UIKit
-import AlphaWalletFoundation
-import Combine
 import AlphaWalletCore
+import AlphaWalletFoundation
+import AlphaWalletTokenScript
 
 class TokenCardWebView: UIView, TokenCardRowViewConfigurable, ViewRoundingSupportable, ViewLoadingSupportable {
     private let server: RPCServer
@@ -17,20 +18,17 @@ class TokenCardWebView: UIView, TokenCardRowViewConfigurable, ViewRoundingSuppor
     private var lastTokenHolder: TokenHolder?
     private var tokenView: TokenView
     private let wallet: Wallet
-    private lazy var tokenScriptRendererView: TokenInstanceWebView = {
-        let webView = TokenInstanceWebView(
-            server: server,
-            wallet: wallet,
-            assetDefinitionStore: assetDefinitionStore)
-        
+    private lazy var tokenScriptRendererView: TokenScriptWebView = {
+        let webView = TokenScriptWebView(server: server, serverWithInjectableRpcUrl: server, wallet: wallet.type, assetDefinitionStore: assetDefinitionStore)
         webView.delegate = self
+        webView.backgroundColor = Configuration.Color.Semantic.defaultViewBackground
         return webView
     }()
 
     var rounding: ViewRounding = .none
     var loading: ViewLoading = .disabled
     var placeholderRounding: ViewRounding = .none
-    
+
     var isStandalone: Bool {
         get { return tokenScriptRendererView.isStandalone }
         set { tokenScriptRendererView.isStandalone = newValue }
@@ -72,7 +70,7 @@ class TokenCardWebView: UIView, TokenCardRowViewConfigurable, ViewRoundingSuppor
         backgroundColor = viewModel.contentsBackgroundColor
         if viewModel.hasTokenScriptHtml {
             tokenScriptRendererView.isHidden = false
-            tokenScriptRendererView.loadHtml(viewModel.tokenScriptHtml)
+            tokenScriptRendererView.loadHtml(viewModel.tokenScriptHtml.html, urlFragment: viewModel.tokenScriptHtml.urlFragment)
             tokenScriptRendererView.update(withTokenHolder: viewModel.tokenHolder, isFungible: false)
         } else {
             tokenScriptRendererView.isHidden = true
@@ -84,21 +82,16 @@ class TokenCardWebView: UIView, TokenCardRowViewConfigurable, ViewRoundingSuppor
     }
 }
 
-extension TokenCardWebView: TokenInstanceWebViewDelegate {
-
-    func requestSignMessage(message: SignMessageType,
-                            server: RPCServer,
-                            account: AlphaWallet.Address,
-                            source: Analytics.SignMessageRequestSource,
-                            requester: RequesterViewModel?) -> AnyPublisher<Data, PromiseError> {
+extension TokenCardWebView: TokenScriptWebViewDelegate {
+    func requestSignMessage(message: SignMessageType, server: RPCServer, account: AlphaWallet.Address, inTokenScriptWebView tokenScriptWebView: TokenScriptWebView) -> AnyPublisher<Data, PromiseError> {
         return .empty()
     }
 
-    func shouldClose(tokenInstanceWebView: TokenInstanceWebView) {
+    func shouldClose(tokenScriptWebView: TokenScriptWebView) {
         //no-op
     }
 
-    func reinject(tokenInstanceWebView: TokenInstanceWebView) {
+    func reinject(tokenScriptWebView: TokenScriptWebView) {
         //Refresh if view, but not item-view
         if isStandalone {
             guard let lastTokenHolder = lastTokenHolder else { return }

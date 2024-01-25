@@ -2,11 +2,12 @@
 
 import UIKit
 import Combine
-import AlphaWalletFoundation
 import AlphaWalletCore
+import AlphaWalletFoundation
+import AlphaWalletTokenScript
 
 protocol ActivityViewControllerDelegate: AnyObject, RequestSignMessageDelegate {
-    func reinject(viewController: ActivityViewController)
+    func reinject(viewController: ActivityViewController) async
     func goToToken(viewController: ActivityViewController)
     func speedupTransaction(transactionId: String, server: RPCServer, viewController: ActivityViewController)
     func cancelTransaction(transactionId: String, server: RPCServer, viewController: ActivityViewController)
@@ -34,11 +35,12 @@ class ActivityViewController: UIViewController {
     private let timestampLabel = UILabel()
     private let separator = UIView()
     private let bottomFiller = UIView.spacerWidth()
-    lazy private var tokenScriptRendererView: TokenInstanceWebView = {
-        let webView = TokenInstanceWebView(server: server, wallet: wallet, assetDefinitionStore: assetDefinitionStore)
+    private lazy var tokenScriptRendererView: TokenScriptWebView = {
+        let webView = TokenScriptWebView(server: server, serverWithInjectableRpcUrl: server, wallet: wallet.type, assetDefinitionStore: assetDefinitionStore)
         webView.isWebViewInteractionEnabled = true
         webView.delegate = self
         webView.isStandalone = true
+        webView.backgroundColor = Configuration.Color.Semantic.defaultViewBackground
 
         return webView
     }()
@@ -184,7 +186,7 @@ class ActivityViewController: UIViewController {
             bottomFiller.isHidden = true
             tokenScriptRendererView.isHidden = false
 
-            tokenScriptRendererView.loadHtml(viewModel.activity.viewHtml)
+            tokenScriptRendererView.loadHtml(viewModel.activity.viewHtml.html, urlFragment: viewModel.activity.viewHtml.urlFragment)
 
             tokenScriptRendererView.update(withId: .init(viewModel.activity.id), resolvedTokenAttributeNameValues: tokenAttributes, resolvedCardAttributeNameValues: cardAttributes, isFirstUpdate: isFirstLoad)
             isFirstLoad = false
@@ -242,29 +244,17 @@ class ActivityViewController: UIViewController {
     }
 }
 
-extension ActivityViewController: TokenInstanceWebViewDelegate {
-
-    func requestSignMessage(message: SignMessageType,
-                            server: RPCServer,
-                            account: AlphaWallet.Address,
-                            source: Analytics.SignMessageRequestSource,
-                            requester: RequesterViewModel?) -> AnyPublisher<Data, PromiseError> {
-
+extension ActivityViewController: TokenScriptWebViewDelegate {
+    func requestSignMessage(message: SignMessageType, server: RPCServer, account: AlphaWallet.Address, inTokenScriptWebView tokenScriptWebView: TokenScriptWebView) -> AnyPublisher<Data, PromiseError> {
         guard let delegate = delegate else { return .empty() }
-
-        return delegate.requestSignMessage(
-            message: message,
-            server: server,
-            account: account,
-            source: source,
-            requester: requester)
+        return delegate.requestSignMessage(message: message, server: server, account: account, source: .tokenScript, requester: nil)
     }
 
-    func shouldClose(tokenInstanceWebView: TokenInstanceWebView) {
+    func shouldClose(tokenScriptWebView: TokenScriptWebView) {
         //no-op
     }
 
-    func reinject(tokenInstanceWebView: TokenInstanceWebView) {
-        delegate?.reinject(viewController: self)
+    func reinject(tokenScriptWebView: TokenScriptWebView) async {
+        await delegate?.reinject(viewController: self)
     }
 }

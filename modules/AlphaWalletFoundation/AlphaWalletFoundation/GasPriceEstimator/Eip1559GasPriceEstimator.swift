@@ -19,7 +19,7 @@ public final class Eip1559GasPriceEstimator: NSObject, GasPriceEstimator {
     private let initialMaxFeePerGas: BigUInt?
     private let initialMaxPriorityFeePerGas: BigUInt?
     private var cancellable = Set<AnyCancellable>()
-    private lazy var scheduler = Scheduler(provider: estimatesProvider, useCountdownTimer: true)
+    private lazy var scheduler = Scheduler(provider: estimatesProvider, refreshAggressively: true)
     private let estimatesProvider: Eip1559GasPriceEstimatorProvider
 
     public private(set) var selectedGasSpeed: GasSpeed = .standard
@@ -254,7 +254,7 @@ extension Eip1559GasPriceEstimator {
         private let blockchainProvider: BlockchainProvider
         private let oracleProvider: Eip1559FeeOracle
 
-        let name: String = ""
+        var name: String { "Eip1559GasPriceEstimatorProvider.\(blockchainProvider.server)" }
         let interval: TimeInterval
         var operation: AnyPublisher<Void, PromiseError> {
             estimateGasPrice()

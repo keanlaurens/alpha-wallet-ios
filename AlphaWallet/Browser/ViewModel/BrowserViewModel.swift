@@ -9,6 +9,7 @@ import Foundation
 import UIKit
 import WebKit
 import JavaScriptCore
+import AlphaWalletBrowser
 import AlphaWalletFoundation
 import AlphaWalletLogger
 import Combine
@@ -52,7 +53,7 @@ class BrowserViewModel: NSObject {
         return config
     }()
     let browserOnly: Bool
-    
+
     init(wallet: Wallet, server: RPCServer, browserOnly: Bool) {
         self.wallet = wallet
         self.server = server
@@ -145,7 +146,7 @@ class BrowserViewModel: NSObject {
 
 extension BrowserViewModel: WKScriptMessageHandler {
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard let command = DappAction.fromMessage(message) else {
+        guard let command = DappOrWalletCommand.fromMessage(message) else {
             if message.name == Browser.locationChangedEventName {
                 recordUrlSubject.send(())
             }

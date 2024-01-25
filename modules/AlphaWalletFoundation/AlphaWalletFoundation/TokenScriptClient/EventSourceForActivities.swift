@@ -98,8 +98,8 @@ final class EventSourceForActivities {
         var tokenScriptChanged: AnyPublisher<[Token], Never> {
             assetDefinitionStore.bodyChange
                 .receive(on: queue)
-                .compactMap { [tokensService] in tokensService.token(for: $0) }
-                .compactMap { [weak self] in self?.map(token: $0) }
+                .flatMap { [tokensService] address in asFuture { await tokensService.token(for: address) } }.compactMap { $0 }
+                .flatMap { [weak self] token in asFuture { await self?.map(token: token) } }.compactMap { $0 }
                 .share()
                 .eraseToAnyPublisher()
         }
@@ -113,15 +113,15 @@ final class EventSourceForActivities {
             self.tokensService = tokensService
         }
 
-        private func map(token: Token) -> [Token] {
+        private func map(token: Token) async -> [Token] {
             guard let session = sessionsProvider.session(for: token.server) else { return [] }
 
-            let xmlHandler = XMLHandler(contract: token.contractAddress, tokenType: token.type, assetDefinitionStore: assetDefinitionStore)
+            let xmlHandler = assetDefinitionStore.xmlHandler(forContract: token.contractAddress, tokenType: token.type)
             guard xmlHandler.hasAssetDefinition, let server = xmlHandler.server else { return [] }
             switch server {
             case .any:
-                let enabledServers = sessionsProvider.activeSessions.map { $0.key }
-                return enabledServers.compactMap { tokensService.token(for: token.contractAddress, server: $0) }
+                let enabledServers: [RPCServer] = sessionsProvider.activeSessions.map { $0.key }
+                return await enabledServers.asyncCompactMap { server in await tokensService.token(for: token.contractAddress, server: server) }.compactMap { $0 }
             case .server(let server):
                 return [token]
             }
@@ -255,25 +255,28 @@ final class EventSourceForActivities {
 
         private class TokenEventsForActivitiesWorker {
             private var request: FetchRequest
-            private let timer = CombineTimer(interval: 65)
+            //TODO longer interval now so we don't hit Infura so much, especially for Polygon. But need to improve in other ways
+            private let timer = CombineTimer(interval: 185)
             private let subject = PassthroughSubject<FetchRequest, Never>()
             private var cancellable: AnyCancellable?
-
-            var debouce: TimeInterval = 60
+            private let debounce: TimeInterval = 60
 
             init(request: FetchRequest, eventsFetcher: TokenEventsForActivitiesTickersFetcher) {
                 self.request = request
 
                 let timedFetch = timer.publisher.map { _ in self.request }.share()
                 let timedOrWaitForCurrent = Publishers.Merge(timedFetch, subject.filter { $0.policy == .waitForCurrent })
-                    .debounce(for: .seconds(debouce), scheduler: RunLoop.main)
+                    .debounce(for: .seconds(debounce), scheduler: RunLoop.main)
                 let force = subject.filter { $0.policy == .force }
                 let initial = Just(request)
 
                 cancellable = Publishers.Merge3(initial, force, timedOrWaitForCurrent)
                     .receive(on: DispatchQueue.global())
-                    .flatMap { [eventsFetcher] in eventsFetcher.fetchEvents(token: $0.token) }
-                    .sink { _ in }
+                    .sink { [eventsFetcher] request in
+                        Task { @MainActor in
+                            await eventsFetcher.fetchEvents(token: request.token)
+                        }
+                    }
             }
 
             func send(request: FetchRequest) {
@@ -309,64 +312,51 @@ final class EventSourceForActivities {
             return xmlHandler.activityCards
         }
 
-        func fetchEvents(token: Token) -> EventForActivityPublisher {
-            let publishers = getActivityCards(token: token)
-                .map { [eventFetcher] card -> EventForActivityPublisher in
-                    let eventOrigin = card.eventOrigin
-                    let oldEvent = eventsDataStore.getLastMatchingEventSortedByBlockNumber(
-                        for: eventOrigin.contract,
-                        tokenContract: token.contractAddress,
-                        server: token.server,
-                        eventName: eventOrigin.eventName)
-
-                    return eventFetcher.fetchEvents(token: token, card: card, oldEventBlockNumber: oldEvent?.blockNumber)
-                        .handleEvents(receiveOutput: { [eventsDataStore] in eventsDataStore.addOrUpdate(events: $0) })
-                        .replaceError(with: [])
-                        .eraseToAnyPublisher()
-                }
-
-            return Publishers.MergeMany(publishers)
-                .collect()
-                .map { $0.flatMap { $0 } }
-                .eraseToAnyPublisher()
+        func fetchEvents(token: Token) async {
+            let cards = getActivityCards(token: token)
+            //For avoid excessive calls even though Infura doesn't rate limit us. This is especially so in Polygon where there's a event block range limit and small block times
+            var delay = UInt64(0)
+            for card in cards {
+                let eventOrigin = card.eventOrigin
+                let oldEvent = await eventsDataStore.getLastMatchingEventSortedByBlockNumber(for: eventOrigin.contract, tokenContract: token.contractAddress, server: token.server, eventName: eventOrigin.eventName)
+                //TODO instead of (only?) delay calls, we should fetch events from the latest blocks and catch up the older ones like we do for ERC-1155. This might mean we ignore the built-in TokenScript events for ERC-20 and ERC-721. But we still want the activity views in those TokenScript files
+                delay += (UInt64.random(in: 2...10) + 2) * 1_000_000_000
+                try? await Task.sleep(nanoseconds: delay)
+                let events = (try? await eventFetcher.fetchEvents(token: token, card: card, oldEventBlockNumber: oldEvent?.blockNumber)) ?? []
+                eventsDataStore.addOrUpdate(events: events)
+            }
         }
     }
-}
 
-extension EventSourceForActivities {
-    enum functional {}
-}
-
-extension EventSourceForActivities.functional {
     static func convertEventToDatabaseObject(_ event: EventParserResultProtocol, date: Date, filterParam: [(filter: [EventFilterable], textEquivalent: String)?], eventOrigin: EventOrigin, tokenContract: AlphaWallet.Address, server: RPCServer) -> EventActivityInstance? {
         guard let eventLog = event.eventLog else { return nil }
 
         let transactionId = eventLog.transactionHash.hexEncoded
-        let decodedResult = EventSource.functional.convertToJsonCompatible(dictionary: event.decodedResult)
+        let decodedResult = EventSource.convertToJsonCompatible(dictionary: event.decodedResult)
         guard let json = decodedResult.jsonString else { return nil }
         //TODO when TokenScript schema allows it, support more than 1 filter
         let filterTextEquivalent = filterParam.compactMap({ $0?.textEquivalent }).first
         let filterText = filterTextEquivalent ?? "\(eventOrigin.eventFilter.name)=\(eventOrigin.eventFilter.value)"
 
         return EventActivityInstance(
-            contract: eventOrigin.contract,
-            tokenContract: tokenContract,
-            server: server,
-            date: date,
-            eventName: eventOrigin.eventName,
-            blockNumber: Int(eventLog.blockNumber),
-            transactionId: transactionId,
-            transactionIndex: Int(eventLog.transactionIndex),
-            logIndex: Int(eventLog.logIndex),
-            filter: filterText,
-            json: json)
+                contract: eventOrigin.contract,
+                tokenContract: tokenContract,
+                server: server,
+                date: date,
+                eventName: eventOrigin.eventName,
+                blockNumber: Int(eventLog.blockNumber),
+                transactionId: transactionId,
+                transactionIndex: Int(eventLog.transactionIndex),
+                logIndex: Int(eventLog.logIndex),
+                filter: filterText,
+                json: json)
     }
 
     static func formFilterFrom(fromParameter parameter: EventParameter, filterName: String, filterValue: String, wallet: Wallet) -> (filter: [EventFilterable], textEquivalent: String)? {
         guard parameter.name == filterName else { return nil }
         guard let parameterType = SolidityType(rawValue: parameter.type) else { return nil }
         let optionalFilter: (filter: AssetAttributeValueUsableAsFunctionArguments, textEquivalent: String)?
-        if let implicitAttribute = EventSource.functional.convertToImplicitAttribute(string: filterValue) {
+        if let implicitAttribute = EventSource.convertToImplicitAttribute(string: filterValue) {
             switch implicitAttribute {
             case .tokenId:
                 optionalFilter = nil

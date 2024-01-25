@@ -74,16 +74,18 @@ public class AlphaWalletNotificationHandler: NotificationHandler {
             guard keystore.currentWallet?.address == wallet else { return }
 
             guard let dep = walletsDependencies.walletDependencies(walletAddress: wallet) else { return }
-            guard let transaction = dep.transactionsService.transaction(withTransactionId: transaction, forServer: server) else { return }
-
-            navigation?.show(transaction: transaction)
+            Task { @MainActor in
+                guard let transaction = await dep.transactionsService.transaction(withTransactionId: transaction, forServer: server) else { return }
+                navigation?.show(transaction: transaction)
+            }
         case .receiveToken(let transaction, _, _, let symbol, let wallet, let server):
             guard keystore.currentWallet?.address == wallet else { return }
 
             guard let dep = walletsDependencies.walletDependencies(walletAddress: wallet) else { return }
-            guard let transaction = dep.transactionsService.transaction(withTransactionId: transaction, forServer: server) else { return }
-
-            navigation?.show(transaction: transaction)
+            Task { @MainActor in
+                guard let transaction = await dep.transactionsService.transaction(withTransactionId: transaction, forServer: server) else { return }
+                navigation?.show(transaction: transaction)
+            }
         }
     }
 
@@ -100,7 +102,7 @@ public class AlphaWalletNotificationHandler: NotificationHandler {
         guard keystore.currentWallet?.address == walletData.wallet else { return .noData }
 
         if let dep = walletsDependencies.walletDependencies(walletAddress: walletData.wallet) {
-            dep.transactionsService.forceResumeOrStart(server: walletData.rpcServer)
+            await dep.transactionsService.forceResumeOrStart(server: walletData.rpcServer)
             return .newData
         }
 

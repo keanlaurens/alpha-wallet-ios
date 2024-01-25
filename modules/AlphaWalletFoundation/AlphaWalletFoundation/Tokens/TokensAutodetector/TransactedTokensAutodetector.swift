@@ -9,23 +9,18 @@ import Foundation
 import AlphaWalletCore
 import Combine
 
-class TransactedTokensAutodetector: NSObject, TokensAutodetector {
+actor TransactedTokensAutodetector: NSObject, TokensAutodetector {
     private let subject = PassthroughSubject<[TokenOrContract], Never>()
     private let tokensDataStore: TokensDataStore
     private var cancellable = Set<AnyCancellable>()
     private let session: WalletSession
-    private var schedulers: [Scheduler]
+    private let schedulers: [Scheduler]
 
-    var detectedTokensOrContracts: AnyPublisher<[TokenOrContract], Never> {
+    nonisolated var detectedTokensOrContracts: AnyPublisher<[TokenOrContract], Never> {
         subject.eraseToAnyPublisher()
     }
 
-    init(tokensDataStore: TokensDataStore,
-         importToken: TokenImportable & TokenOrContractFetchable,
-         session: WalletSession,
-         blockchainExplorer: BlockchainExplorer,
-         tokenTypes: [Eip20TokenType]) {
-
+    init(tokensDataStore: TokensDataStore, importToken: TokenImportable & TokenOrContractFetchable, session: WalletSession, blockchainExplorer: BlockchainExplorer, tokenTypes: [EipTokenType]) {
         self.session = session
         self.tokensDataStore = tokensDataStore
 
@@ -45,12 +40,18 @@ class TransactedTokensAutodetector: NSObject, TokensAutodetector {
 
         Publishers.MergeMany(providers.map { $0.publisher })
             .compactMap { try? $0.get() }
-            .compactMap { [weak self] in self?.filter(detectedContracts: $0) }
+            .flatMap { contracts in
+                asFuture {
+                    await self.filter(detectedContracts: contracts)
+                }
+            }
             .flatMap { [importToken] contracts in
                 let publishers = contracts.map {
                     importToken.fetchTokenOrContract(for: $0, onlyIfThereIsABalance: false).mapToResult()
                 }
-                return Publishers.MergeMany(publishers).collect()
+                //Arbitrary number that is not too big and not too small so we get a chance to process and finish auto-detecting some tokens without waiting for a few hundred to finish
+                //TODO for wallets that transacted with many tokens, this (the whole process of auto-detecting, not just a single batch in the next line) can take more than 10 minutes to process. We ought to save the contracts that have been detected but not processed yet. Otherwise we would have scrolled past that in the blockchain explorer history and if the app suspended, crashes or gets killed, we'll miss those tokens
+                return Publishers.MergeMany(publishers).collect(30)
             }.map { $0.compactMap { try? $0.get() } }
             .filter { !$0.isEmpty }
             .multicast(subject: subject)
@@ -62,23 +63,23 @@ class TransactedTokensAutodetector: NSObject, TokensAutodetector {
         cancellable.cancellAll()
     }
 
-    func start() {
+    nonisolated func start() async {
         schedulers.forEach { $0.start() }
     }
 
-    func stop() {
+    nonisolated func stop() {
         schedulers.forEach { $0.cancel() }
     }
 
-    func resume() {
+    nonisolated func resume() {
         schedulers.forEach { $0.restart() }
     }
 
-    private func filter(detectedContracts: [AlphaWallet.Address]) -> [AlphaWallet.Address] {
-        let alreadyAddedContracts = tokensDataStore.tokens(for: [session.server]).map { $0.contractAddress }
-        let deletedContracts = tokensDataStore.deletedContracts(forServer: session.server).map { $0.contractAddress }
-        let hiddenContracts = tokensDataStore.hiddenContracts(forServer: session.server).map { $0.contractAddress }
-        let delegateContracts = tokensDataStore.delegateContracts(forServer: session.server).map { $0.contractAddress }
+    private nonisolated func filter(detectedContracts: [AlphaWallet.Address]) async -> [AlphaWallet.Address] {
+        let alreadyAddedContracts = await tokensDataStore.tokens(for: [session.server]).map { $0.contractAddress }
+        let deletedContracts = await tokensDataStore.deletedContracts(forServer: session.server).map { $0.contractAddress }
+        let hiddenContracts = await tokensDataStore.hiddenContracts(forServer: session.server).map { $0.contractAddress }
+        let delegateContracts = await tokensDataStore.delegateContracts(forServer: session.server).map { $0.contractAddress }
 
         return detectedContracts - alreadyAddedContracts - deletedContracts - hiddenContracts - delegateContracts
     }
@@ -86,7 +87,7 @@ class TransactedTokensAutodetector: NSObject, TokensAutodetector {
 
 extension TransactedTokensAutodetector {
 
-    private static func interactionsPaginationKey(server: RPCServer, tokenType: Eip20TokenType) -> String {
+    private static func interactionsPaginationKey(server: RPCServer, tokenType: EipTokenType) -> String {
         return "interactionsPagination-\(server.chainID)-\(tokenType.rawValue)"
     }
 
@@ -95,7 +96,7 @@ extension TransactedTokensAutodetector {
         private let blockchainExplorer: BlockchainExplorer
         private var storage: PaginationStorage
         private let subject = PassthroughSubject<Result<[AlphaWallet.Address], PromiseError>, Never>()
-        private let tokenType: Eip20TokenType
+        private let tokenType: EipTokenType
         private let stateProvider: SchedulerStateProvider
 
         let interval: TimeInterval
@@ -108,13 +109,7 @@ extension TransactedTokensAutodetector {
             subject.eraseToAnyPublisher()
         }
 
-        init(session: WalletSession,
-             blockchainExplorer: BlockchainExplorer,
-             storage: PaginationStorage,
-             tokenType: Eip20TokenType,
-             interval: TimeInterval = 0,
-             stateProvider: SchedulerStateProvider) {
-
+        init(session: WalletSession, blockchainExplorer: BlockchainExplorer, storage: PaginationStorage, tokenType: EipTokenType, interval: TimeInterval, stateProvider: SchedulerStateProvider) {
             self.stateProvider = stateProvider
             self.interval = interval
             self.tokenType = tokenType
@@ -178,3 +173,4 @@ extension TransactedTokensAutodetector {
         }
     }
 }
+

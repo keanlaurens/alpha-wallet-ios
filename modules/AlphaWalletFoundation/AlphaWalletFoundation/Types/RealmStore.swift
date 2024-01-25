@@ -5,74 +5,73 @@
 //  Created by Vladyslav Shepitko on 06.04.2022.
 //
 
+import Foundation
+import Combine
 import Realm
 import RealmSwift
-import Foundation
 
-public func fakeRealm(wallet: Wallet, inMemoryIdentifier: String = "MyInMemoryRealm") -> Realm {
+//TODO these fakeXXX functions should only be in the test target
+public func fakeRealmConfiguration(wallet: Wallet) -> Realm.Configuration {
     let uuid = UUID().uuidString
-    return try! Realm(configuration: Realm.Configuration(inMemoryIdentifier: "\(inMemoryIdentifier)-\(wallet.address.eip55String)-\(uuid)"))
+    //We don't use `Realm.Configuration(inMemoryIdentifier:)` because they don't seem to work properly when we have multiple Realm instances accessing the same store. Using file-based Realm for tests runs the slight risk of bloat if we don't clean up properly; but it's acceptable
+    return Realm.Configuration(fileURL: URL(fileURLWithPath: try! RealmConfiguration._RLMRealmPathInCacheFolderForFile("\(wallet.address.eip55String)-\(uuid).realm"), isDirectory: false))
 }
 
-public func fakeRealm(inMemoryIdentifier: String = "MyInMemoryRealm") -> Realm {
+public func fakeRealmConfiguration() -> Realm.Configuration {
     let uuid = UUID().uuidString
-    return try! Realm(configuration: Realm.Configuration(inMemoryIdentifier: "\(inMemoryIdentifier)-\(uuid)"))
+    //We don't use `Realm.Configuration(inMemoryIdentifier:)` because they don't seem to work properly when we have multiple Realm instances accessing the same store. Using file-based Realm for tests runs the slight risk of bloat if we don't clean up properly; but it's acceptable
+    return Realm.Configuration(fileURL: URL(fileURLWithPath: try! RealmConfiguration._RLMRealmPathInCacheFolderForFile("\(uuid).realm"), isDirectory: false))
 }
 
 open class RealmStore {
     public static func threadName(for wallet: Wallet) -> String {
         return "org.alphawallet.swift.realmStore.\(wallet.address).wallet"
     }
+    var cancellables = Set<AnyCancellable>()
     private let config: Realm.Configuration
     private let thread: RunLoopThread = .init()
-    private let mainThreadRealm: Realm
-    //NOTE: Making it as lazy removes blocking main thread (when init method get called), and we sure that backgroundThreadRealm always get called in thread.performSync() { context
-    private lazy var backgroundThreadRealm: Realm = {
-        guard let realm = try? Realm(configuration: config) else { fatalError("Failure to resolve background realm") }
 
-        return realm
-    }()
-    fileprivate let queueForRealmStore = DispatchQueue(label: "org.alphawallet.swift.realm.store", qos: .background)
+    public var fileURL: URL? {
+        return config.fileURL
+    }
 
-    public init(realm: Realm, name: String = "org.alphawallet.swift.realmStore") {
-        self.mainThreadRealm = realm
-        config = realm.configuration
-
+    public init(config: Realm.Configuration, name: String = "org.alphawallet.swift.realmStore") {
+        self.config = config
         thread.name = name
         thread.start()
     }
 
-    public func performSync(_ block: @escaping (Realm) -> Void) {
-        if Thread.isMainThread {
-            block(mainThreadRealm)
-        } else {
-            //NOTE: synchronize calls from different threads to avoid
-            //*** -[AlphaWallet.RunLoopThread performSelector:onThread:withObject:waitUntilDone:modes:]: target thread exited while waiting for the perform
-            dispatchPrecondition(condition: .notOnQueue(queueForRealmStore))
-            queueForRealmStore.sync {
-                //NOTE: perform an operation on run loop thread
-                thread._perform {
-                    block(self.backgroundThreadRealm)
-                }
-            }
+    //TODO we'll want this to be really async
+    public func perform(_ block: @escaping (Realm) -> Void) async {
+        let config = config
+        self.thread._perform {
+            let realm = try! Realm(configuration: config)
+            block(realm)
+        }
+    }
+
+    public func performSync(_ block: @escaping (Realm) -> Void) async {
+        let config = config
+        self.thread._perform {
+            let realm = try! Realm(configuration: config)
+            block(realm)
         }
     }
 }
 
 extension RealmStore {
-    public static var shared: RealmStore = RealmStore(realm: Realm.shared())
+    public static var shared: RealmStore = RealmStore(config: Realm.shared().configuration)
 
     public class func storage(for wallet: Wallet) -> RealmStore {
-        return RealmStore(realm: .realm(for: wallet), name: RealmStore.threadName(for: wallet))
-    } 
+        return RealmStore(config: Realm.realm(for: wallet).configuration, name: RealmStore.threadName(for: wallet))
+    }
 }
 
 extension Realm {
-
     public static func realm(for account: Wallet) -> Realm {
         let migration = DatabaseMigration(account: account)
         migration.perform()
-        
+
         return try! Realm(configuration: migration.config)
     }
 

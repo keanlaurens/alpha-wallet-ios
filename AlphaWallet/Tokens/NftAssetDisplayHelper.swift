@@ -315,12 +315,9 @@ extension NftAssetDisplayHelper {
     enum functional {}
 }
 
-extension NftAssetDisplayHelper.functional {
-    static func extractTokenScriptTokenLevelAttributesWithLabels(tokenHolder: TokenHolder,
-                                                                 tokenAttributeValues: AssetAttributeValues,
-                                                                 assetDefinitionStore: AssetDefinitionStore) -> AnyPublisher<[OpenSeaNonFungibleTrait], Never> {
-
-        let xmlHandler = XMLHandler(contract: tokenHolder.contractAddress, tokenType: tokenHolder.tokens[0].tokenType, assetDefinitionStore: assetDefinitionStore)
+fileprivate extension NftAssetDisplayHelper.functional {
+    static func extractTokenScriptTokenLevelAttributesWithLabels(tokenHolder: TokenHolder, tokenAttributeValues: AssetAttributeValues, assetDefinitionStore: AssetDefinitionStore) -> AnyPublisher<[OpenSeaNonFungibleTrait], Never> {
+        let xmlHandler = assetDefinitionStore.xmlHandler(forContract: tokenHolder.contractAddress, tokenType: tokenHolder.tokenType)
         return tokenAttributeValues.resolveAllAttributes()
             .map { resolvedTokenAttributeNameValues in
                 let tokenLevelAttributeIdsAndNames = xmlHandler.fieldIdsAndNamesExcludingBase

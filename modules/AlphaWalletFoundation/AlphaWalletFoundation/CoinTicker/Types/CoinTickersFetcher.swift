@@ -4,8 +4,8 @@ import Foundation
 import Combine
 
 public protocol CoinTickersFetcher {
-    func fetchTickers(for tokens: [TokenMappedToTicker], force: Bool, currency: Currency)
-    func resolveTickerIds(for tokens: [TokenMappedToTicker])
-    func fetchChartHistories(for token: TokenMappedToTicker, force: Bool, periods: [ChartHistoryPeriod], currency: Currency) -> AnyPublisher<[ChartHistoryPeriod: ChartHistory], Never>
-    func cancel()
+    func fetchTickers(for tokens: [TokenMappedToTicker], force: Bool, currency: Currency) async
+    func resolveTickerIds(for tokens: [TokenMappedToTicker]) async
+    func fetchChartHistories(for token: TokenMappedToTicker, force: Bool, periods: [ChartHistoryPeriod], currency: Currency) async -> [ChartHistoryPeriod: ChartHistory]
+    func cancel() async
 }

@@ -9,6 +9,7 @@ import Foundation
 import Combine
 import UIKit
 import AlphaWalletFoundation
+import AlphaWalletCore
 
 struct SwapOptionsViewModelInput {
     let selection: AnyPublisher<IndexPath, Never>
@@ -48,19 +49,26 @@ class SwapOptionsViewModel {
         input.selection
             .sink { [configurator] indexPath in
                 let server = configurator.sessions[indexPath.row].server
-                guard configurator.isAvailable(server: server) else { return }
-                configurator.set(server: server)
+                Task { @MainActor in
+                    guard await configurator.isAvailable(server: server) else { return }
+                    configurator.set(server: server)
+                }
             }.store(in: &cancelable)
 
         let sessions = Publishers.CombineLatest(configurator.$sessions, configurator.$server)
                 .receive(on: queue)
-                .map { [weak configurator] sessions, server -> [ServerImageViewModel] in
-                    guard let configurator = configurator else { return [] }
-                    return sessions.map {
-                        let isAvailableToSelect = configurator.isAvailable(server: $0.server)
-                        return ServerImageViewModel(server: .server($0.server), isSelected: $0.server == server, isAvailableToSelect: isAvailableToSelect)
+                .flatMap { [weak configurator] sessions, server in
+                    asFuture {
+                        guard let configurator = configurator else { return [] }
+                        var models: [ServerImageViewModel] = []
+                        for each in sessions {
+                            let isAvailableToSelect = await configurator.isAvailable(server: each.server)
+                            let model = ServerImageViewModel(server: .server(each.server), isSelected: each.server == server, isAvailableToSelect: isAvailableToSelect)
+                            models.append(model)
+                        }
+                        return models
                     }
-                }.map { sessions -> SwapOptionsViewModel.SessionsSnapshot in
+                }.map { (sessions: [ServerImageViewModel]) -> SwapOptionsViewModel.SessionsSnapshot in
                     var snapshot = SwapOptionsViewModel.SessionsSnapshot()
                     snapshot.appendSections([.sessions])
                     snapshot.appendItems(sessions)
@@ -81,8 +89,10 @@ class SwapOptionsViewModel {
     }
 
     func set(selectedServer server: RPCServer) {
-        guard configurator.isAvailable(server: server) else { return }
-        configurator.set(server: server)
+        Task { @MainActor in
+            guard await configurator.isAvailable(server: server) else { return }
+            configurator.set(server: server)
+        }
     }
 }
 

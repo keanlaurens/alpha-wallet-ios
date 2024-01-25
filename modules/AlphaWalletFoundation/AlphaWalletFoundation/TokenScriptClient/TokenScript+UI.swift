@@ -1,11 +1,8 @@
 // Copyright © 2022 Stormbird PTE. LTD.
 
 import UIKit
+import AlphaWalletTokenScript
 import PromiseKit
-
-public protocol TokenScriptLocalRefsSource {
-    var localRefs: [AttributeId: AssetInternalValue] { get }
-}
 
 public protocol ConfirmTokenScriptActionTransactionDelegate: AnyObject {
     func confirmTransactionSelected(in navigationController: UINavigationController, token: Token, contract: AlphaWallet.Address, tokenId: TokenId, values: [AttributeId: AssetInternalValue], localRefs: [AttributeId: AssetInternalValue], server: RPCServer, session: WalletSession, keystore: Keystore, transactionFunction: FunctionOrigin)
@@ -14,17 +11,13 @@ public protocol ConfirmTokenScriptActionTransactionDelegate: AnyObject {
 //Needed because there is `TokenScript.Token` and we don't want to use that
 public typealias FoundationToken = Token
 
+//TODO should move into AlphaWalletTokenScript
 extension TokenScript {
     public static func performTokenScriptAction(_ action: TokenInstanceAction, token: FoundationToken, tokenId: TokenId, tokenHolder: TokenHolder, userEntryIds: [String], fetchUserEntries: [Promise<Any?>], localRefsSource: TokenScriptLocalRefsSource, assetDefinitionStore: AssetDefinitionStore, keystore: Keystore, server: RPCServer, session: WalletSession, confirmTokenScriptActionTransactionDelegate: ConfirmTokenScriptActionTransactionDelegate?, navigationController: UINavigationController) {
         guard action.hasTransactionFunction else { return }
 
-        let xmlHandler = XMLHandler(contract: token.contractAddress, tokenType: token.type, assetDefinitionStore: assetDefinitionStore)
-        let tokenLevelAttributeValues = xmlHandler.resolveAttributesBypassingCache(
-            withTokenIdOrEvent: tokenHolder.tokens[0].tokenIdOrEvent,
-            server: server,
-            account: session.account.address,
-            assetDefinitionStore: assetDefinitionStore)
-
+        let xmlHandler = assetDefinitionStore.xmlHandler(forContract: token.contractAddress, tokenType: token.type)
+        let tokenLevelAttributeValues = xmlHandler.resolveAttributesBypassingCache(withTokenIdOrEvent: tokenHolder.tokens[0].tokenIdOrEvent, server: server, account: session.account.address)
         let resolveTokenLevelSubscribableAttributes = Array(tokenLevelAttributeValues.values).filterToSubscribables.createPromiseForSubscribeOnce()
 
         firstly {
@@ -60,6 +53,7 @@ extension TokenScript {
     private static func resolveActionAttributeValues(action: TokenInstanceAction, withUserEntryValues userEntryValues: [AttributeId: String], tokenLevelTokenIdOriginAttributeValues: [AttributeId: AssetAttributeSyntaxValue], tokenHolder: TokenHolder, server: RPCServer, session: WalletSession, localRefsSource: TokenScriptLocalRefsSource, assetDefinitionStore: AssetDefinitionStore) -> Promise<[AttributeId: AssetInternalValue]> {
         //TODO Not reading/writing from/to cache here because we haven't worked out volatility of attributes yet. So we assume all attributes used by an action as volatile, have to fetch the latest
         //Careful to only resolve (and wait on) attributes that the smart contract function invocation is dependent on. Some action-level attributes might only be used for display
+        //TODO why does this resolution not go through an XMLHandler?
         let attributeNameValues = assetDefinitionStore.assetAttributeResolver.resolve(withTokenIdOrEvent: tokenHolder.tokens[0].tokenIdOrEvent, userEntryValues: userEntryValues, server: server, account: session.account.address, additionalValues: tokenLevelTokenIdOriginAttributeValues, localRefs: localRefsSource.localRefs, attributes: action.attributesDependencies).mapValues { $0.value }
 
         let attributes = AssetAttributeValues(attributeValues: attributeNameValues)
